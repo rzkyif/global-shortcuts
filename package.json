@@ -17,7 +17,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+ssh://git@github.com:rzkyif/global-shortcuts.git"
+    "url": "git+ssh://git@github.com/rzkyif/global-shortcuts.git"
   },
   "files": [
     "index.d.ts",
