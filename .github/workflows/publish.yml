@@ -298,7 +298,7 @@ jobs:
             "
 
             # Generate README.md for the binary package
-            echo "# global-shortcuts binary package\n\nPre-compiled binary package for the [global-shortcuts](https://github.com/rzkyif/global-shortcuts) project - see the main package for documentation." > "npm-packages/$pkg_name/README.md"
+            echo -e "# global-shortcuts binary package\n\nPre-compiled binary package for the [global-shortcuts](https://github.com/rzkyif/global-shortcuts) project - see the main package for documentation." > "npm-packages/$pkg_name/README.md"
           done
 
           ls -la npm-packages/

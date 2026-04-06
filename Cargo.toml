@@ -2,7 +2,7 @@
 authors = ["Rizky Ismail <rizkyismail@gmail.com>"]
 edition = "2021"
 name = "global-shortcuts"
-version = "0.1.2"
+version = "0.1.3"
 
 [[bin]]
 name = "global-shortcuts"

@@ -40,10 +40,10 @@ function getBinaryName() {
   let normalizedPlatform;
   switch (platform) {
     case "darwin":
-      normalizedPlatform = "darwin";
+      normalizedPlatform = "macos";
       break;
     case "win32":
-      normalizedPlatform = "win32";
+      normalizedPlatform = "windows";
       break;
     case "linux":
       normalizedPlatform = "linux";
