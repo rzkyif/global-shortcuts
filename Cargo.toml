@@ -1,0 +1,17 @@
+[package]
+authors = ["Rizky Ismail <rizkyismail@gmail.com>"]
+edition = "2021"
+name = "global-shortcuts"
+version = "0.1.0"
+
+[[bin]]
+name = "global-shortcuts"
+path = "src/main.rs"
+
+[dependencies]
+global-hotkey = "0.7"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+tao = "0.35.0"

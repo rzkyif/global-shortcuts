@@ -1,0 +1,131 @@
+name: build
+
+env:
+  APP_NAME: global-shortcuts
+  CARGO_INCREMENTAL: "1"
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - "**/*.md"
+      - LICENSE
+      - "**/*.gitignore"
+      - .editorconfig
+      - docs/**
+  pull_request: null
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Lint
+  # ---------------------------------------------------------------------------
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Setup bun
+        uses: oven-sh/setup-bun@v2
+      - name: Install rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: Install dependencies
+        run: bun install
+      - name: Format JS
+        run: bun run format:js -- --check
+      - name: Lint JS
+        run: bun run lint:js
+      - name: Format Rust
+        run: bun run format:rs
+      - name: Lint Rust
+        run: bun run lint:rs
+
+  # ---------------------------------------------------------------------------
+  # Build and Test
+  # ---------------------------------------------------------------------------
+  build-and-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        settings:
+          - host: macos-latest
+            target: x86_64-apple-darwin
+            binary_name: global-shortcuts-macos-x64
+          - host: macos-latest
+            target: aarch64-apple-darwin
+            binary_name: global-shortcuts-macos-arm64
+          - host: windows-latest
+            target: x86_64-pc-windows-msvc
+            binary_name: global-shortcuts-windows-x64.exe
+          - host: windows-latest
+            target: aarch64-pc-windows-msvc
+            binary_name: global-shortcuts-windows-arm64.exe
+          - host: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            binary_name: global-shortcuts-linux-x64
+          - host: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            binary_name: global-shortcuts-linux-arm64
+
+    name: Build and Test - ${{ matrix.settings.target }}
+    runs-on: ${{ matrix.settings.host }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Setup bun
+        uses: oven-sh/setup-bun@v2
+      - name: Install rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.settings.target }}
+      - name: Cache cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            .cargo-cache
+            target/
+          key: ${{ matrix.settings.target }}-cargo-${{ matrix.settings.host }}
+      - name: Install dependencies
+        run: bun install
+      - name: Install cross-compilation toolchain (ARM64 Linux)
+        if: matrix.settings.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+      - name: Build
+        run: cargo build --release --target ${{ matrix.settings.target }}
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+      - name: Run tests
+        if: matrix.settings.target != 'aarch64-unknown-linux-gnu' && matrix.settings.target != 'aarch64-pc-windows-msvc'
+        env:
+          SIDECAR_BINARY_PATH: ${{ github.workspace }}/target/${{ matrix.settings.target }}/release/${{ env.APP_NAME }}${{ contains(matrix.settings.target, 'windows') && '.exe' || '' }}
+        run: bun test
+      - name: Rename binary
+        shell: bash
+        run: |
+          # Determine source filename (Windows uses .exe suffix)
+          if [[ "${{ matrix.settings.target }}" == *windows* ]]; then
+            SOURCE_NAME="${{ env.APP_NAME }}.exe"
+          else
+            SOURCE_NAME="${{ env.APP_NAME }}"
+          fi
+
+          # Copy and make executable
+          cp "target/${{ matrix.settings.target }}/release/$SOURCE_NAME" "${{ matrix.settings.binary_name }}"
+          chmod +x "${{ matrix.settings.binary_name }}"
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.settings.binary_name }}
+          path: ${{ matrix.settings.binary_name }}
+          if-no-files-found: error

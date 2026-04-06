@@ -1,0 +1,364 @@
+name: publish
+
+env:
+  APP_NAME: global-shortcuts
+  CARGO_INCREMENTAL: "1"
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Git tag to publish from (e.g., v1.0.0)"
+        required: true
+        type: string
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Determine tag and version
+  # ---------------------------------------------------------------------------
+  determine-tag:
+    name: Determine tag and version
+    runs-on: ubuntu-latest
+    outputs:
+      tag_name: ${{ steps.tag.outputs.tag_name }}
+      version: ${{ steps.tag.outputs.version }}
+
+    steps:
+      - name: Determine tag and version
+        id: tag
+        shell: bash
+        run: |
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            TAG_NAME="${{ github.ref_name }}"
+          elif [[ -n "${{ github.event.inputs.tag }}" ]]; then
+            TAG_NAME="${{ github.event.inputs.tag }}"
+          else
+            echo "Error: No tag found"
+            exit 1
+          fi
+
+          VERSION=$(echo "$TAG_NAME" | sed 's/^v//')
+
+          echo "Tag name: $TAG_NAME"
+          echo "Version: $VERSION"
+
+          echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+  # ---------------------------------------------------------------------------
+  # Build jobs
+  # ---------------------------------------------------------------------------
+  build:
+    needs: determine-tag
+    strategy:
+      fail-fast: false
+      matrix:
+        settings:
+          - host: macos-latest
+            target: x86_64-apple-darwin
+            binary_name: global-shortcuts-macos-x64
+          - host: macos-latest
+            target: aarch64-apple-darwin
+            binary_name: global-shortcuts-macos-arm64
+          - host: windows-latest
+            target: x86_64-pc-windows-msvc
+            binary_name: global-shortcuts-windows-x64.exe
+          - host: windows-latest
+            target: aarch64-pc-windows-msvc
+            binary_name: global-shortcuts-windows-arm64.exe
+          - host: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            binary_name: global-shortcuts-linux-x64
+          - host: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            binary_name: global-shortcuts-linux-arm64
+
+    name: Build and Test - ${{ matrix.settings.target }}
+    runs-on: ${{ matrix.settings.host }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.determine-tag.outputs.tag_name }}
+      - name: Setup bun
+        uses: oven-sh/setup-bun@v2
+      - name: Install rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.settings.target }}
+      - name: Cache cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            .cargo-cache
+            target/
+          key: ${{ matrix.settings.target }}-cargo-${{ matrix.settings.host }}
+      - name: Install dependencies
+        run: bun install
+      - name: Install cross-compilation toolchain (ARM64 Linux)
+        if: matrix.settings.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+      - name: Build
+        run: cargo build --release --target ${{ matrix.settings.target }}
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+      - name: Run tests
+        if: matrix.settings.target != 'aarch64-unknown-linux-gnu' && matrix.settings.target != 'aarch64-pc-windows-msvc'
+        env:
+          SIDECAR_BINARY_PATH: ${{ github.workspace }}/target/${{ matrix.settings.target }}/release/${{ env.APP_NAME }}${{ contains(matrix.settings.target, 'windows') && '.exe' || '' }}
+        run: bun test
+      - name: Rename binary
+        shell: bash
+        run: |
+          # Determine source filename (Windows uses .exe suffix)
+          if [[ "${{ matrix.settings.target }}" == *windows* ]]; then
+            SOURCE_NAME="${{ env.APP_NAME }}.exe"
+          else
+            SOURCE_NAME="${{ env.APP_NAME }}"
+          fi
+
+          # Copy and make executable
+          cp "target/${{ matrix.settings.target }}/release/$SOURCE_NAME" "${{ matrix.settings.binary_name }}"
+          chmod +x "${{ matrix.settings.binary_name }}"
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.settings.binary_name }}
+          path: ${{ matrix.settings.binary_name }}
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # Release — collect all artifacts and create a GitHub Release
+  # ---------------------------------------------------------------------------
+  release:
+    name: Release pre-compiled binaries
+    runs-on: ubuntu-latest
+    needs:
+      - determine-tag
+      - build
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: binaries
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -la binaries/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.determine-tag.outputs.tag_name }}
+          name: ${{ needs.determine-tag.outputs.tag_name }}
+          draft: false
+          prerelease: ${{ contains(needs.determine-tag.outputs.version, '-') }}
+          body: |
+            Standalone Rust sidecar binaries for [global-shortcuts](https://github.com/rzkyif/global-shortcuts).
+
+            > **Note:** These binaries are for manual sidecar usage only. The recommended way to use this library is via the NPM package (`npm install global-shortcuts`), where the sidecar process is automatically managed by `index.js`. See the [README](https://github.com/rzkyif/global-shortcuts#readme) for usage instructions.
+
+            ## Downloads
+
+            | Platform | Architecture | File |
+            |----------|-------------|------|
+            | macOS    | Apple Silicon (arm64) | `global-shortcuts-macos-arm64` |
+            | macOS    | Intel (x86_64)       | `global-shortcuts-macos-x64` |
+            | Linux    | x86_64               | `global-shortcuts-linux-x64` |
+            | Linux    | ARM64                | `global-shortcuts-linux-arm64` |
+            | Windows  | x64                  | `global-shortcuts-windows-x64.exe` |
+            | Windows  | ARM64                | `global-shortcuts-windows-arm64.exe` |
+          files: binaries/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ---------------------------------------------------------------------------
+  # Publish to npm
+  # ---------------------------------------------------------------------------
+  publish:
+    name: Publish to npm
+    runs-on: ubuntu-latest
+    needs:
+      - determine-tag
+      - build
+      - release
+    env:
+      VERSION: ${{ needs.determine-tag.outputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.determine-tag.outputs.tag_name }}
+      - name: Download all artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: binaries
+          merge-multiple: true
+      - name: List artifacts
+        run: ls -la binaries/
+      - name: Create npm packages
+        shell: bash
+        run: |
+          echo "Creating npm packages for version: $VERSION"
+
+          # Clean up any existing packages directory
+          rm -rf npm-packages
+
+          # Create a directory for each platform's package
+          for binary in binaries/*; do
+            if [[ ! -f "$binary" ]]; then
+              continue
+            fi
+
+            binary_name=$(basename "$binary")
+            pkg_name=""
+            pkg_os=""
+            pkg_cpu=""
+
+            case "$binary_name" in
+              *macos-x64*)
+                pkg_name="global-shortcuts-macos-x64"
+                pkg_os="darwin"
+                pkg_cpu="x64"
+                ;;
+              *macos-arm64*)
+                pkg_name="global-shortcuts-macos-arm64"
+                pkg_os="darwin"
+                pkg_cpu="arm64"
+                ;;
+              *windows-x64*)
+                pkg_name="global-shortcuts-windows-x64"
+                pkg_os="win32"
+                pkg_cpu="x64"
+                ;;
+              *windows-arm64*)
+                pkg_name="global-shortcuts-windows-arm64"
+                pkg_os="win32"
+                pkg_cpu="arm64"
+                ;;
+              *linux-x64*)
+                pkg_name="global-shortcuts-linux-x64"
+                pkg_os="linux"
+                pkg_cpu="x64"
+                ;;
+              *linux-arm64*)
+                pkg_name="global-shortcuts-linux-arm64"
+                pkg_os="linux"
+                pkg_cpu="arm64"
+                ;;
+              *) echo "Unknown binary: $binary_name" && continue ;;
+            esac
+
+            echo "Packaging $binary_name as $pkg_name"
+
+            mkdir -p "npm-packages/$pkg_name"
+            cp "$binary" "npm-packages/$pkg_name/"
+
+            # Create package.json for the binary package with platform-specific os/cpu
+            node -e "
+              const pkg = {
+                name: '$pkg_name',
+                version: '$VERSION',
+                description: 'Pre-compiled binary package for the global-shortcuts project - see the main package for documentation.',
+                keywords: [
+                  'global-shortcuts',
+                  'global-hotkey',
+                  'hotkey',
+                  'keyboard',
+                  'linux',
+                  'macos',
+                  'native',
+                  'rust',
+                  'shortcut',
+                  'sidecar',
+                  'windows'
+                ],
+                os: ['$pkg_os'],
+                cpu: ['$pkg_cpu'],
+                main: '$binary_name',
+                files: ['$binary_name', 'README.md'],
+                publishConfig: { registry: 'https://registry.npmjs.org/', access: 'public' }
+              };
+              require('fs').writeFileSync('npm-packages/$pkg_name/package.json', JSON.stringify(pkg, null, 2) + '\n');
+            "
+
+            # Generate README.md for the binary package
+            echo "# global-shortcuts binary package\n\nPre-compiled binary package for the [global-shortcuts](https://github.com/rzkyif/global-shortcuts) project - see the main package for documentation." > "npm-packages/$pkg_name/README.md"
+          done
+
+          ls -la npm-packages/
+      - name: Publish binary packages
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        shell: bash
+        run: |
+          # Check if tag is a semver release (x.y.z) or prerelease (x.y.z-beta)
+          if echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            TAG_TYPE="release"
+          elif echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9]+)?$'; then
+            TAG_TYPE="next"
+          else
+            echo "Version '$VERSION' is not a valid semver, skipping publish"
+            exit 1
+          fi
+
+          echo "Publishing as $TAG_TYPE version"
+
+          # Set up npm auth
+          echo "//registry.npmjs.org/:_authToken=$NPM_TOKEN" > ~/.npmrc
+
+          cd npm-packages
+          for pkg in */; do
+            echo "Publishing $pkg..."
+            cd "$pkg"
+            if [[ "$TAG_TYPE" == "release" ]]; then
+              npm publish --access public
+            else
+              npm publish --tag next --access public
+            fi
+            cd ..
+          done
+
+      - name: Publish main package
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        shell: bash
+        run: |
+          echo "Publishing main package global-shortcuts"
+
+          # Create clean staging directory with only publishable files
+          rm -rf main-package
+          mkdir -p main-package
+
+          # Copy only the files needed for the main package
+          cp index.js main-package/
+          cp index.d.ts main-package/
+          cp package.json main-package/
+          cp LICENSE main-package/
+          cp README.md main-package/
+
+          cd main-package
+
+          echo "Files in main-package:"
+          ls -la
+
+          if [[ "$TAG_TYPE" == "release" ]]; then
+            npm publish --access public
+          else
+            npm publish --tag next --access public
+          fi
