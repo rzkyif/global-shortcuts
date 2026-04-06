@@ -74,12 +74,13 @@ function isValidExecutable(filePath) {
       return false;
     }
 
-    // On Unix-like systems, verify it's executable
+    // On Unix-like systems, verify it's executable or make it executable
     if (process.platform !== "win32") {
       try {
         fs.accessSync(filePath, fs.constants.X_OK);
       } catch {
-        return false;
+        // File exists but is not executable, make it executable
+        fs.chmodSync(filePath, 0o755);
       }
     }
 
