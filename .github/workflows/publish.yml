@@ -341,6 +341,18 @@ jobs:
         run: |
           echo "Publishing main package global-shortcuts"
 
+          # Check if tag is a semver release (x.y.z) or prerelease (x.y.z-beta)
+          if echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            TAG_TYPE="release"
+          elif echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9]+)?$'; then
+            TAG_TYPE="next"
+          else
+            echo "Version '$VERSION' is not a valid semver, skipping publish"
+            exit 1
+          fi
+
+          echo "Publishing as $TAG_TYPE version"
+
           # Create clean staging directory with only publishable files
           rm -rf main-package
           mkdir -p main-package
