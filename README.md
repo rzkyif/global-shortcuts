@@ -4,6 +4,8 @@ A robust, cross-platform Node.js and Bun library for reliably registering global
 
 Under the hood, `global-shortcuts` bypasses the threading limitations and event-loop collisions of native Node.js addons by utilizing a lightweight Rust sidecar. It leverages Tauri's [`global-hotkey`](https://github.com/tauri-apps/global-hotkey) and [`tao`](https://github.com/tauri-apps/tao) crates to guarantee stable, OS-compliant hotkey detection without freezing your JavaScript thread.
 
+See [the Why This Exists section below](#why-this-exists) for more information
+
 ## Platform Support
 
 - **macOS:** x64, arm64 (Apple Silicon)
@@ -203,6 +205,16 @@ When `DEBUG=true` or `DEBUG=global-shortcuts` is set in the environment, debug l
 | --------- | ---------------------- | ----------------------------- |
 | `level`   | `"debug"` or `"error"` | The log level.                |
 | `message` | string                 | Human-readable debug message. |
+
+## Why This Exists
+
+Registering global hotkeys in Node.js/Bun on macOS is notoriously difficult due to deep architectural conflicts:
+
+- **The Permission Problem:** Most existing libraries trigger heavy-handed, invasive macOS Accessibility permission prompts.
+- **The Threading Catch-22:** The correct native Apple API (Carbon) avoids these prompts, but strictly mandates running on the Main Thread alongside a native OS event loop (CFRunLoop).
+- **The Native Addon Failure:** Because the V8/JavaScript engine already monopolizes the Main Thread, attempting to bridge Carbon via standard N-API or bun:ffi fails. You either crash the app with illegal thread exceptions, or you successfully start the Mac loop and permanently freeze your JavaScript.
+
+**The Solution:** `global-shortcuts` bypasses this dead-end entirely. By isolating the OS-level event loop inside a microscopic, pre-compiled Rust sidecar process, it safely secures its own native Main Thread. The result is rock-solid hotkeys with zero Accessibility prompts, practically zero memory footprint, and a completely unblocked JavaScript event loop.
 
 ## License
 
