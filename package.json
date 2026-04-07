@@ -46,6 +46,7 @@
     "lint": "oxlint .",
     "lint:js": "oxlint .",
     "lint:rs": "cargo clippy",
+    "release": "bun scripts/release.js",
     "test": "bun test __test__/"
   },
   "devDependencies": {
