@@ -1,6 +1,6 @@
 {
   "name": "global-shortcuts",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "Global hotkey registration for Bun / Node.js using a Rust sidecar process",
   "keywords": [
     "global-hotkey",
@@ -56,12 +56,12 @@
     "oxlint": "^1.14.0"
   },
   "optionalDependencies": {
-    "global-shortcuts-linux-arm64": "1.0.1",
-    "global-shortcuts-linux-x64": "1.0.1",
-    "global-shortcuts-macos-arm64": "1.0.1",
-    "global-shortcuts-macos-x64": "1.0.1",
-    "global-shortcuts-windows-arm64": "1.0.1",
-    "global-shortcuts-windows-x64": "1.0.1"
+    "global-shortcuts-linux-arm64": "1.1.0",
+    "global-shortcuts-linux-x64": "1.1.0",
+    "global-shortcuts-macos-arm64": "1.1.0",
+    "global-shortcuts-macos-x64": "1.1.0",
+    "global-shortcuts-windows-arm64": "1.1.0",
+    "global-shortcuts-windows-x64": "1.1.0"
   },
   "engines": {
     "node": ">= 18.0.0"
