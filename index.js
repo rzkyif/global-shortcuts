@@ -110,11 +110,7 @@ let managerIdCounter = 0;
  * Clean up all managers on process exit
  */
 function cleanupAllManagers() {
-  for (const [_id, manager] of managers) {
-    if (!manager.destroyed) {
-      manager._cleanup();
-    }
-  }
+  managers.forEach((manager) => !manager.destroyed && manager._cleanup());
   managers.clear();
 }
 
@@ -185,30 +181,43 @@ class GlobalHotKeyManager {
 
     // Handle process exit
     this.sidecar.on("exit", (code, signal) => {
+      this._log(
+        this.destroyed ? "debug" : "error",
+        `Process exited: code=${code}, signal=${signal}`,
+      );
       if (!this.destroyed) {
-        this._log("error", `Process exited unexpectedly: code=${code}, signal=${signal}`);
         this.destroyed = true;
-        // Reject all pending promises
-        for (const [_id, pending] of this.pending) {
-          pending.reject(new Error("Sidecar process exited unexpectedly"));
-        }
-        this.pending.clear();
-        managers.delete(this.id);
-      } else {
-        this._log("debug", `Process exited: code=${code}, signal=${signal}`);
-        managers.delete(this.id);
+        this._rejectAllPending(new Error("Sidecar process exited unexpectedly"));
       }
+      managers.delete(this.id);
     });
 
     this.sidecar.on("error", (err) => {
       this._log("error", `Process error: ${err.message}`);
-      // Reject all pending promises
-      for (const [, pending] of this.pending) {
-        pending.reject(new Error(`Sidecar process error: ${err.message}`));
-      }
-      this.pending.clear();
+      this._rejectAllPending(new Error(`Sidecar process error: ${err.message}`));
       managers.delete(this.id);
     });
+  }
+
+  _resolvePending(key, result) {
+    const pending = this.pending.get(key);
+    if (pending) {
+      pending.resolve(result);
+      this.pending.delete(key);
+    }
+  }
+
+  _rejectPending(key, error) {
+    const pending = this.pending.get(key);
+    if (pending) {
+      pending.reject(error);
+      this.pending.delete(key);
+    }
+  }
+
+  _rejectAllPending(error) {
+    this.pending.forEach((pending) => pending.reject(error));
+    this.pending.clear();
   }
 
   /**
@@ -252,15 +261,12 @@ class GlobalHotKeyManager {
     try {
       const event = JSON.parse(message);
 
-      let key, ids, results, pending;
       switch (event.action) {
         case "ready":
           if (!this.ready) {
             this.ready = true;
             this._log("debug", "Sidecar is ready, processing queued commands");
-            for (const cmd of this.readyQueue) {
-              this._writeToStdin(cmd);
-            }
+            this.readyQueue.forEach((cmd) => this._writeToStdin(cmd));
             this.readyQueue = [];
           }
           break;
@@ -278,60 +284,41 @@ class GlobalHotKeyManager {
 
         case "registered":
         case "unregistered":
-          pending = this.pending.get(event.id);
-          if (pending) {
-            this._log("debug", `Resolved promise for id=${event.id}`);
-            pending.resolve(event.id);
-            this.pending.delete(event.id);
-          }
+          this._log("debug", `Resolved promise for id=${event.id}`);
+          this._resolvePending(event.id, event.id);
           break;
 
         case "registered_all":
-        case "unregistered_all":
-          key = event.action === "registered_all" ? "register_all" : "unregister_all";
-          ids = event.ids || [];
-          pending = this.pending.get(key);
-          if (pending) {
-            this._log("debug", `Resolved ${key} promise with ids=${JSON.stringify(ids)}`);
-            pending.resolve(ids);
-            this.pending.delete(key);
-          }
+        case "unregistered_all": {
+          const isReg = event.action === "registered_all";
+          const ids = event.ids || [];
+          this._log(
+            "debug",
+            `Resolved ${isReg ? "register_all" : "unregister_all"} promise with ids=${JSON.stringify(ids)}`,
+          );
+          this._resolvePending(isReg ? "register_all" : "unregister_all", ids);
           break;
+        }
 
         case "registered_all_partial":
-        case "unregistered_all_partial":
-          key = event.action === "registered_all_partial" ? "register_all" : "unregister_all";
-          results = event.results;
-          pending = this.pending.get(key);
-          if (pending) {
-            const mappedResults = results.map((entry) =>
-              entry.error ? new Error(entry.error) : entry.id,
-            );
-            this._log(
-              "debug",
-              `Rejected ${key} promise with results=${JSON.stringify(mappedResults)}`,
-            );
-            pending.reject(mappedResults);
-            this.pending.delete(key);
-          }
+        case "unregistered_all_partial": {
+          const isReg = event.action === "registered_all_partial";
+          const mappedResults = event.results.map((e) => (e.error ? new Error(e.error) : e.id));
+          this._log(
+            "debug",
+            `Rejected ${isReg ? "register_all" : "unregister_all"} promise with partial results`,
+          );
+          this._rejectPending(isReg ? "register_all" : "unregister_all", mappedResults);
           break;
+        }
 
         case "error":
           this._log("error", `Error from sidecar: ${event.message}`);
           if (event.id != null) {
-            const pending = this.pending.get(event.id);
-            if (pending) {
-              pending.reject(new Error(event.message));
-              this.pending.delete(event.id);
-            }
+            this._rejectPending(event.id, new Error(event.message));
           } else {
-            for (const key of ["register_all", "unregister_all"]) {
-              const pending = this.pending.get(key);
-              if (pending) {
-                pending.reject(new Error(event.message));
-                this.pending.delete(key);
-              }
-            }
+            this._rejectPending("register_all", new Error(event.message));
+            this._rejectPending("unregister_all", new Error(event.message));
           }
           break;
 
@@ -429,11 +416,10 @@ class GlobalHotKeyManager {
       return { hotkey: entry.hotkey, id };
     });
 
-    const idList = ids.map((e) => e.id);
     return this._sendCommand(
       { action: "register_all", hotkeys: ids },
       "register_all",
-      `Registering ${idList.length} hotkeys: ${ids.map((h) => h.hotkey).join(", ")}`,
+      `Registering ${ids.length} hotkeys: ${ids.map((h) => h.hotkey).join(", ")}`,
     );
   }
 
@@ -443,7 +429,7 @@ class GlobalHotKeyManager {
    * @returns {Promise<number[]>} Promise resolving with all IDs, or rejecting with (number | Error)[]
    */
   unregisterAll(ids) {
-    for (const id of ids) this.callbacks.delete(id);
+    ids.forEach((id) => this.callbacks.delete(id));
 
     return this._sendCommand(
       { action: "unregister_all", ids },
@@ -460,10 +446,7 @@ class GlobalHotKeyManager {
     this.destroyed = true;
 
     // Reject all pending promises
-    for (const [, pending] of this.pending) {
-      pending.reject(new Error("GlobalHotKeyManager destroyed"));
-    }
-    this.pending.clear();
+    this._rejectAllPending(new Error("GlobalHotKeyManager destroyed"));
     this.callbacks.clear();
     this.readyQueue = [];
 

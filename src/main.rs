@@ -292,52 +292,37 @@ fn process_commands(
             "debug",
             &format!("Received register_all: {} hotkeys", hotkeys.len()),
           );
-
           if hotkeys.is_empty() {
             debug_log("debug", "RegisterAll: empty input, returning empty array");
             send_event(output_buffer, OutputEvent::RegisteredAll { ids: vec![] });
             return false;
           }
 
-          // Build an ordered results array to maintain input order
-          // Each entry: (node_id, Result<(), String>)
-          let mut results: Vec<(u32, Result<(), String>)> = Vec::new();
-
-          // First pass: parse all hotkeys
-          let mut parsed_hotkeys: Vec<(u32, RustHotKey)> = Vec::new();
-          let mut parse_errors: HashMap<u32, String> = HashMap::new();
-
-          for entry in &hotkeys {
-            match entry.hotkey.parse::<RustHotKey>() {
-              Ok(hk) => parsed_hotkeys.push((entry.id, hk)),
-              Err(e) => {
-                parse_errors.insert(entry.id, format!("Failed to parse hotkey: {}", e));
+          let mut parsed_hotkeys = Vec::new();
+          let mut results: Vec<(u32, Result<(), String>)> = hotkeys
+            .iter()
+            .map(|entry| match entry.hotkey.parse::<RustHotKey>() {
+              Ok(hk) => {
+                parsed_hotkeys.push((entry.id, hk));
+                (entry.id, Ok(()))
               }
-            }
-          }
+              Err(e) => (entry.id, Err(format!("Failed to parse hotkey: {}", e))),
+            })
+            .collect();
 
-          for entry in &hotkeys {
-            if let Some(err) = parse_errors.get(&entry.id) {
-              results.push((entry.id, Err(err.clone())));
-            } else {
-              results.push((entry.id, Ok(())));
-            }
-          }
-
-          // Second pass: register each hotkey individually
-          for (node_id, hotkey) in &parsed_hotkeys {
+          for (node_id, hotkey) in parsed_hotkeys {
             let rust_id = hotkey.id();
-            match manager.register(*hotkey) {
+            match manager.register(hotkey) {
               Ok(_) => {
                 registered_hotkeys.insert(
-                  *node_id,
+                  node_id,
                   RegisteredHotkey {
-                    node_id: *node_id,
+                    node_id,
                     rust_id,
-                    hotkey: *hotkey,
+                    hotkey,
                   },
                 );
-                rust_to_node_id.insert(rust_id, *node_id);
+                rust_to_node_id.insert(rust_id, node_id);
               }
               Err(e) => {
                 let error_msg = format!("Failed to register: {}", e);
@@ -345,143 +330,110 @@ fn process_commands(
                   "error",
                   &format!("Register failed: id={}, error={}", node_id, e),
                 );
-                for (rid, result) in &mut results {
-                  if *rid == *node_id {
-                    *result = Err(error_msg.clone());
-                    break;
-                  }
+                if let Some(res) = results.iter_mut().find(|(rid, _)| *rid == node_id) {
+                  res.1 = Err(error_msg);
                 }
               }
             }
           }
-
-          // Check if all succeeded
-          let all_success = results.iter().all(|(_, r)| r.is_ok());
-          let success_count = results.iter().filter(|(_, r)| r.is_ok()).count();
-          debug_log(
-            "debug",
-            &format!(
-              "RegisterAll: {}/{} hotkeys registered",
-              success_count,
-              results.len()
-            ),
-          );
-
-          let success_ids: Vec<u32> = results.iter().map(|(id, _)| *id).collect();
-          if all_success {
-            send_event(
-              output_buffer,
-              OutputEvent::RegisteredAll { ids: success_ids },
-            );
-          } else {
-            send_event(
-              output_buffer,
-              OutputEvent::RegisteredAllPartial {
-                results: results
-                  .iter()
-                  .map(|(id, r)| match r {
-                    Ok(_) => BatchResult {
-                      id: *id,
-                      error: None,
-                    },
-                    Err(e) => BatchResult {
-                      id: *id,
-                      error: Some(e.clone()),
-                    },
-                  })
-                  .collect(),
-              },
-            );
-          }
+          send_batch_result(output_buffer, results, true);
         }
-
         Command::UnregisterAll { ids } => {
           debug_log(
             "debug",
             &format!("Received unregister_all: {} ids", ids.len()),
           );
-
           if ids.is_empty() {
             debug_log("debug", "UnregisterAll: empty input, returning empty array");
             send_event(output_buffer, OutputEvent::UnregisteredAll { ids: vec![] });
             return false;
           }
 
-          // Build ordered results array maintaining input order
-          // Each entry: (id, Result<(), String>)
-          let mut results: Vec<(u32, Result<(), String>)> = Vec::new();
-
-          for &id in &ids {
-            if let Some(reg) = registered_hotkeys.remove(&id) {
-              rust_to_node_id.remove(&reg.rust_id);
-              if let Err(e) = manager.unregister(reg.hotkey) {
-                debug_log(
-                  "error",
-                  &format!("Unregister failed: id={}, error={}", id, e),
-                );
-                results.push((id, Err(format!("Failed to unregister: {}", e))));
+          let results = ids
+            .into_iter()
+            .map(|id| {
+              if let Some(reg) = registered_hotkeys.remove(&id) {
+                rust_to_node_id.remove(&reg.rust_id);
+                if let Err(e) = manager.unregister(reg.hotkey) {
+                  debug_log(
+                    "error",
+                    &format!("Unregister failed: id={}, error={}", id, e),
+                  );
+                  (id, Err(format!("Failed to unregister: {}", e)))
+                } else {
+                  debug_log("debug", &format!("Unregister success: id={}", id));
+                  (id, Ok(()))
+                }
               } else {
-                debug_log("debug", &format!("Unregister success: id={}", id));
-                results.push((id, Ok(())));
+                debug_log(
+                  "debug",
+                  &format!("Unregister: id={} not found, treating as success", id),
+                );
+                (id, Ok(()))
               }
-            } else {
-              // ID not found - treat as success (already unregistered)
-              debug_log(
-                "debug",
-                &format!("Unregister: id={} not found, treating as success", id),
-              );
-              results.push((id, Ok(())));
-            }
-          }
-
-          // Check if all succeeded
-          let all_success = results.iter().all(|(_, r)| r.is_ok());
-          let success_count = results.iter().filter(|(_, r)| r.is_ok()).count();
-          debug_log(
-            "debug",
-            &format!(
-              "UnregisterAll: {}/{} hotkeys unregistered",
-              success_count,
-              results.len()
-            ),
-          );
-
-          let success_ids: Vec<u32> = results.iter().map(|(id, _)| *id).collect();
-          if all_success {
-            send_event(
-              output_buffer,
-              OutputEvent::UnregisteredAll { ids: success_ids },
-            );
-          } else {
-            send_event(
-              output_buffer,
-              OutputEvent::UnregisteredAllPartial {
-                results: results
-                  .iter()
-                  .map(|(id, r)| match r {
-                    Ok(_) => BatchResult {
-                      id: *id,
-                      error: None,
-                    },
-                    Err(e) => BatchResult {
-                      id: *id,
-                      error: Some(e.clone()),
-                    },
-                  })
-                  .collect(),
-              },
-            );
-          }
+            })
+            .collect();
+          send_batch_result(output_buffer, results, false);
         }
       },
-      Err(mpsc::TryRecvError::Empty) => {
-        // No more messages for now
-        return false;
-      }
-      Err(mpsc::TryRecvError::Disconnected) => {
-        return true;
-      }
+      Err(mpsc::TryRecvError::Empty) => return false,
+      Err(mpsc::TryRecvError::Disconnected) => return true,
     }
+  }
+}
+
+fn send_batch_result(
+  output_buffer: &OutputBuffer,
+  results: Vec<(u32, Result<(), String>)>,
+  is_register: bool,
+) {
+  let all_success = results.iter().all(|(_, r)| r.is_ok());
+  let success_count = results.iter().filter(|(_, r)| r.is_ok()).count();
+  let op_name = if is_register {
+    "RegisterAll"
+  } else {
+    "UnregisterAll"
+  };
+  debug_log(
+    "debug",
+    &format!(
+      "{}: {}/{} hotkeys processed",
+      op_name,
+      success_count,
+      results.len()
+    ),
+  );
+
+  if all_success {
+    let ids: Vec<u32> = results.into_iter().map(|(id, _)| id).collect();
+    send_event(
+      output_buffer,
+      if is_register {
+        OutputEvent::RegisteredAll { ids }
+      } else {
+        OutputEvent::UnregisteredAll { ids }
+      },
+    );
+  } else {
+    let results_mapped = results
+      .into_iter()
+      .map(|(id, r)| match r {
+        Ok(_) => BatchResult { id, error: None },
+        Err(e) => BatchResult { id, error: Some(e) },
+      })
+      .collect();
+    send_event(
+      output_buffer,
+      if is_register {
+        OutputEvent::RegisteredAllPartial {
+          results: results_mapped,
+        }
+      } else {
+        OutputEvent::UnregisteredAllPartial {
+          results: results_mapped,
+        }
+      },
+    );
   }
 }
 
@@ -492,7 +444,6 @@ fn process_hotkey_events(output_buffer: &OutputBuffer, rust_to_node_id: &HashMap
       HotKeyState::Pressed => "Pressed",
       HotKeyState::Released => "Released",
     };
-    // Use rust_id as fallback, but try to find node_id
     let node_id = rust_to_node_id.get(&event.id).copied().unwrap_or(event.id);
     debug_log(
       "debug",
@@ -511,12 +462,13 @@ fn process_hotkey_events(output_buffer: &OutputBuffer, rust_to_node_id: &HashMap
   }
 }
 
-// Platform-specific main functions
-
-/// macOS/Windows implementation using Tao event loop
-#[cfg(not(target_os = "linux"))]
-fn main_impl() {
-  // Initialize debug mode from environment variable
+fn setup_sidecar() -> (
+  mpsc::Receiver<Command>,
+  OutputBuffer,
+  RustGlobalHotKeyManager,
+  HashMap<u32, RegisteredHotkey>,
+  HashMap<u32, u32>,
+) {
   let debug_env = std::env::var("DEBUG").unwrap_or_default();
   let debug_on = debug_env == "true" || debug_env == "global-shortcuts";
   DEBUG_ENABLED.store(debug_on, Ordering::Relaxed);
@@ -527,41 +479,50 @@ fn main_impl() {
   }
   debug_log("debug", &format!("PID: {}", std::process::id()));
 
-  // Create the event loop on the main thread (required for macOS)
-  let mut event_loop: tao::event_loop::EventLoop<()> = tao::event_loop::EventLoop::new();
-
-  // Create a channel to communicate from stdin thread to event loop
   let rx = spawn_stdin_reader();
+  let manager = RustGlobalHotKeyManager::new().unwrap_or_else(|e| {
+    eprintln!("Failed to create GlobalHotKeyManager: {}", e);
+    std::process::exit(1);
+  });
 
-  // Create the global hotkey manager
-  let manager = match RustGlobalHotKeyManager::new() {
-    Ok(m) => m,
-    Err(e) => {
-      eprintln!("Failed to create GlobalHotKeyManager: {}", e);
-      std::process::exit(1);
-    }
-  };
-
-  // Mutable state: map node_id -> RegisteredHotkey
-  let mut registered_hotkeys: HashMap<u32, RegisteredHotkey> = HashMap::new();
-  // Reverse lookup: rust_id -> node_id
-  let mut rust_to_node_id: HashMap<u32, u32> = HashMap::new();
-
-  // Create output buffer for stdout
   let output_buffer = OutputBuffer::new();
-
-  // Send ready message to indicate sidecar is ready to receive commands
   debug_log("debug", "Sending ready event to stdout");
   send_event(&output_buffer, OutputEvent::Ready);
 
-  // Set activation policy to Accessory to hide dock icon in MacOS
+  (rx, output_buffer, manager, HashMap::new(), HashMap::new())
+}
+
+fn run_tick(
+  rx: &mpsc::Receiver<Command>,
+  registered_hotkeys: &mut HashMap<u32, RegisteredHotkey>,
+  rust_to_node_id: &mut HashMap<u32, u32>,
+  manager: &RustGlobalHotKeyManager,
+  output_buffer: &OutputBuffer,
+) -> bool {
+  if process_commands(
+    rx,
+    registered_hotkeys,
+    rust_to_node_id,
+    manager,
+    output_buffer,
+  ) {
+    return true;
+  }
+  output_buffer.flush();
+  process_hotkey_events(output_buffer, rust_to_node_id);
+  false
+}
+
+#[cfg(not(target_os = "linux"))]
+fn main_impl() {
+  let (rx, output_buffer, manager, mut registered_hotkeys, mut rust_to_node_id) = setup_sidecar();
+  let mut event_loop = tao::event_loop::EventLoop::new();
+
   #[cfg(target_os = "macos")]
   event_loop.set_activation_policy(tao::platform::macos::ActivationPolicy::Accessory);
 
-  // Run the event loop
   event_loop.run(move |_event, _window_target, control_flow| {
-    // Process all pending commands from stdin and check for disconnect
-    if process_commands(
+    if run_tick(
       &rx,
       &mut registered_hotkeys,
       &mut rust_to_node_id,
@@ -571,61 +532,16 @@ fn main_impl() {
       *control_flow = ControlFlow::Exit;
       return;
     }
-
-    // Flush output buffer periodically
-    output_buffer.flush();
-
-    // Process global hotkey events - convert rust_id to node_id
-    process_hotkey_events(&output_buffer, &rust_to_node_id);
-
-    // Use WaitUntil with a short timeout to periodically poll the stdin channel.
-    // This is necessary because the stdin channel doesn't wake up the event loop.
     *control_flow = ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(10));
   });
 }
 
-/// Linux implementation using a simple polling loop without Tao
 #[cfg(target_os = "linux")]
 fn main_impl() {
-  // Initialize debug mode from environment variable
-  let debug_env = std::env::var("DEBUG").unwrap_or_default();
-  let debug_on = debug_env == "true" || debug_env == "global-shortcuts";
-  DEBUG_ENABLED.store(debug_on, Ordering::Relaxed);
+  let (rx, output_buffer, manager, mut registered_hotkeys, mut rust_to_node_id) = setup_sidecar();
 
-  debug_log("debug", "Sidecar starting up (Linux polling mode)");
-  if debug_on {
-    debug_log("debug", &format!("Debug mode enabled: DEBUG={}", debug_env));
-  }
-  debug_log("debug", &format!("PID: {}", std::process::id()));
-
-  // Create a channel to communicate from stdin thread to main loop
-  let rx = spawn_stdin_reader();
-
-  // Create the global hotkey manager
-  let manager = match RustGlobalHotKeyManager::new() {
-    Ok(m) => m,
-    Err(e) => {
-      eprintln!("Failed to create GlobalHotKeyManager: {}", e);
-      std::process::exit(1);
-    }
-  };
-
-  // Mutable state: map node_id -> RegisteredHotkey
-  let mut registered_hotkeys: HashMap<u32, RegisteredHotkey> = HashMap::new();
-  // Reverse lookup: rust_id -> node_id
-  let mut rust_to_node_id: HashMap<u32, u32> = HashMap::new();
-
-  // Create output buffer for stdout
-  let output_buffer = OutputBuffer::new();
-
-  // Send ready message to indicate sidecar is ready to receive commands
-  debug_log("debug", "Sending ready event to stdout");
-  send_event(&output_buffer, OutputEvent::Ready);
-
-  // Simple polling loop - no event loop needed on Linux
   loop {
-    // Process all pending commands from stdin and check for disconnect
-    if process_commands(
+    if run_tick(
       &rx,
       &mut registered_hotkeys,
       &mut rust_to_node_id,
@@ -635,14 +551,6 @@ fn main_impl() {
       debug_log("debug", "Stdin disconnected, exiting");
       return;
     }
-
-    // Flush output buffer periodically
-    output_buffer.flush();
-
-    // Process global hotkey events - convert rust_id to node_id
-    process_hotkey_events(&output_buffer, &rust_to_node_id);
-
-    // Sleep briefly to avoid busy-waiting
     thread::sleep(Duration::from_millis(10));
   }
 }
