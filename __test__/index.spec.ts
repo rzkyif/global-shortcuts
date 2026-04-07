@@ -90,9 +90,10 @@ describe("GlobalHotKeyManager", () => {
     const id = await manager.register("ctrl+u", () => {});
     expect(typeof id).toBe("number");
 
-    await manager.unregister(id);
+    const unregId = await manager.unregister(id);
+    expect(typeof unregId).toBe("number");
+    expect(unregId).toBe(id);
 
-    // No error means success
     manager.destroy();
   });
 
@@ -105,9 +106,11 @@ describe("GlobalHotKeyManager", () => {
       { hotkey: "ctrl+5", callback: () => {} },
     ]);
 
-    await manager.unregisterAll(ids);
+    const unregIds = await manager.unregisterAll(ids);
+    expect(Array.isArray(unregIds)).toBe(true);
+    expect(unregIds.length).toBe(ids.length);
+    expect(unregIds).toEqual(ids);
 
-    // No error means success
     manager.destroy();
   });
 
@@ -170,7 +173,8 @@ describe("GlobalHotKeyManager", () => {
     await waitForReady(manager);
 
     const id1 = await manager.register("ctrl+r", () => {});
-    await manager.unregister(id1);
+    const unregId = await manager.unregister(id1);
+    expect(unregId).toBe(id1);
 
     const id2 = await manager.register("ctrl+r", () => {});
 
@@ -240,8 +244,9 @@ describe("GlobalHotKeyManager", () => {
     const manager = new GlobalHotKeyManager({ binaryPath: getTestBinaryPath() });
     await waitForReady(manager);
 
-    // Should not throw
-    await manager.unregisterAll([]);
+    const unregIds = await manager.unregisterAll([]);
+    expect(Array.isArray(unregIds)).toBe(true);
+    expect(unregIds.length).toBe(0);
 
     manager.destroy();
   });

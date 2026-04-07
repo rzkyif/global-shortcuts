@@ -49,12 +49,72 @@ pub struct HotKeyEntry {
   pub id: u32,
 }
 
-/// Event sent from main thread to stdout
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TriggeredEvent {
-  pub action: String,
+/// Events sent from main thread to stdout
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "action")]
+pub enum OutputEvent {
+  /// Sidecar is ready to receive commands
+  #[serde(rename = "ready")]
+  Ready,
+  /// Single hotkey registered successfully
+  #[serde(rename = "registered")]
+  Registered { id: u32 },
+  /// Single hotkey unregistered successfully
+  #[serde(rename = "unregistered")]
+  Unregistered { id: u32 },
+  /// All hotkeys registered successfully
+  #[serde(rename = "registered_all")]
+  RegisteredAll {
+    #[serde(serialize_with = "serialize_vec", default)]
+    ids: Vec<u32>,
+  },
+  /// Some hotkeys failed to register
+  #[serde(rename = "registered_all_partial")]
+  RegisteredAllPartial { results: Vec<RegisterResult> },
+  /// All hotkeys unregistered successfully
+  #[serde(rename = "unregistered_all")]
+  UnregisteredAll {
+    #[serde(serialize_with = "serialize_vec", default)]
+    ids: Vec<u32>,
+  },
+  /// Some IDs failed to unregister
+  #[serde(rename = "unregistered_all_partial")]
+  UnregisteredAllPartial { results: Vec<UnregisterResult> },
+  /// Hotkey was pressed or released
+  #[serde(rename = "triggered")]
+  Triggered { id: u32, state: String },
+  /// Error during operation
+  #[serde(rename = "error")]
+  Error { id: Option<u32>, message: String },
+}
+
+/// Ensure Vec is always serialized, even when empty
+fn serialize_vec<S>(vec: &[u32], serializer: S) -> Result<S::Ok, S::Error>
+where
+  S: serde::Serializer,
+{
+  use serde::ser::SerializeSeq;
+  let mut seq = serializer.serialize_seq(Some(vec.len()))?;
+  for item in vec {
+    seq.serialize_element(item)?;
+  }
+  seq.end()
+}
+
+/// Result entry for register_all_partial
+#[derive(Debug, Clone, Serialize)]
+pub struct RegisterResult {
   pub id: u32,
-  pub state: String,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub error: Option<String>,
+}
+
+/// Result entry for unregister_all_partial
+#[derive(Debug, Clone, Serialize)]
+pub struct UnregisterResult {
+  pub id: u32,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub error: Option<String>,
 }
 
 /// Debug log event written to stderr
@@ -79,7 +139,7 @@ impl OutputBuffer {
     }
   }
 
-  fn append(&self, event: &TriggeredEvent) {
+  fn append(&self, event: &OutputEvent) {
     let json = serde_json::to_string(event).unwrap();
     let mut buf = self.buffer.lock().unwrap();
     buf.push_str(&json);
@@ -314,11 +374,19 @@ fn parse_key(key: &str) -> Result<Code, String> {
   }
 }
 
+/// Helper to determine if an event should be flushed immediately
+fn should_flush_immediately(event: &OutputEvent) -> bool {
+  matches!(
+    event,
+    OutputEvent::Ready | OutputEvent::Registered { .. } | OutputEvent::Unregistered { .. }
+  )
+}
+
 /// Send a message to stdout with buffering to prevent flooding
-fn send_event(output_buffer: &OutputBuffer, event: &TriggeredEvent) {
-  output_buffer.append(event);
-  // Flush immediately for important events
-  if event.action == "ready" || event.action == "registered" || event.action == "unregistered" {
+fn send_event(output_buffer: &OutputBuffer, event: OutputEvent) {
+  let flush = should_flush_immediately(&event);
+  output_buffer.append(&event);
+  if flush {
     output_buffer.flush();
   }
 }
@@ -402,23 +470,15 @@ fn process_commands(
                   );
                   rust_to_node_id.insert(rust_id, id);
                   debug_log("debug", &format!("Register success: id={}", id));
-                  send_event(
-                    output_buffer,
-                    &TriggeredEvent {
-                      action: "registered".to_string(),
-                      id,
-                      state: "success".to_string(),
-                    },
-                  );
+                  send_event(output_buffer, OutputEvent::Registered { id });
                 }
                 Err(e) => {
                   debug_log("error", &format!("Register failed: id={}, error={}", id, e));
                   send_event(
                     output_buffer,
-                    &TriggeredEvent {
-                      action: "error".to_string(),
-                      id,
-                      state: format!("Failed to register: {}", e),
+                    OutputEvent::Error {
+                      id: Some(id),
+                      message: format!("Failed to register: {}", e),
                     },
                   );
                 }
@@ -431,10 +491,9 @@ fn process_commands(
               );
               send_event(
                 output_buffer,
-                &TriggeredEvent {
-                  action: "error".to_string(),
-                  id,
-                  state: format!("Failed to parse hotkey: {}", e),
+                OutputEvent::Error {
+                  id: Some(id),
+                  message: format!("Failed to parse hotkey: {}", e),
                 },
               );
             }
@@ -451,36 +510,21 @@ fn process_commands(
               );
               send_event(
                 output_buffer,
-                &TriggeredEvent {
-                  action: "error".to_string(),
-                  id,
-                  state: format!("Failed to unregister: {}", e),
+                OutputEvent::Error {
+                  id: Some(id),
+                  message: format!("Failed to unregister: {}", e),
                 },
               );
             } else {
               debug_log("debug", &format!("Unregister success: id={}", id));
-              send_event(
-                output_buffer,
-                &TriggeredEvent {
-                  action: "unregistered".to_string(),
-                  id,
-                  state: "success".to_string(),
-                },
-              );
+              send_event(output_buffer, OutputEvent::Unregistered { id });
             }
           } else {
             debug_log(
               "debug",
               &format!("Unregister: id={} not found in map, sending success", id),
             );
-            send_event(
-              output_buffer,
-              &TriggeredEvent {
-                action: "unregistered".to_string(),
-                id,
-                state: "success".to_string(),
-              },
-            );
+            send_event(output_buffer, OutputEvent::Unregistered { id });
           }
         }
         Command::RegisterAll { hotkeys } => {
@@ -489,105 +533,115 @@ fn process_commands(
             &format!("Received register_all: {} hotkeys", hotkeys.len()),
           );
 
-          // First pass: parse all hotkeys and collect errors
-          let mut parsed_hotkeys: Vec<(u32, RustHotKey)> = Vec::new();
-          let mut errors: Vec<(u32, String)> = Vec::new();
+          if hotkeys.is_empty() {
+            debug_log("debug", "RegisterAll: empty input, returning empty array");
+            send_event(output_buffer, OutputEvent::RegisteredAll { ids: vec![] });
+            return false;
+          }
 
-          for entry in hotkeys {
+          // Build an ordered results array to maintain input order
+          // Each entry: (node_id, Result<(), String>)
+          let mut results: Vec<(u32, Result<(), String>)> = Vec::new();
+
+          // First pass: parse all hotkeys
+          let mut parsed_hotkeys: Vec<(u32, RustHotKey)> = Vec::new();
+          let mut parse_errors: std::collections::HashMap<u32, String> =
+            std::collections::HashMap::new();
+
+          for entry in &hotkeys {
             match parse_hotkey(&entry.hotkey) {
               Ok((mods, code)) => {
                 let rust_hotkey = RustHotKey::new(mods, code);
                 parsed_hotkeys.push((entry.id, rust_hotkey));
               }
               Err(e) => {
-                errors.push((entry.id, e));
+                parse_errors.insert(entry.id, format!("Failed to parse hotkey: {}", e));
               }
             }
           }
 
-          // Send parse errors immediately
-          for (id, error_msg) in &errors {
-            send_event(
-              output_buffer,
-              &TriggeredEvent {
-                action: "error".to_string(),
-                id: *id,
-                state: format!("Failed to parse hotkey: {}", error_msg),
-              },
-            );
+          // Initialize results with parse errors
+          for entry in &hotkeys {
+            if let Some(err) = parse_errors.get(&entry.id) {
+              results.push((entry.id, Err(err.clone())));
+            } else {
+              // Placeholder - will be updated after registration
+              results.push((entry.id, Ok(())));
+            }
           }
 
-          // If no hotkeys could be parsed, we're done
-          if parsed_hotkeys.is_empty() {
-            debug_log("debug", "RegisterAll: no valid hotkeys to register");
-            send_event(
-              output_buffer,
-              &TriggeredEvent {
-                action: "registered_all".to_string(),
-                id: 0,
-                state: "success".to_string(),
-              },
-            );
-            return false;
-          }
-
-          // Try to register all hotkeys at once
-          let rust_hotkeys: Vec<RustHotKey> = parsed_hotkeys.iter().map(|(_, h)| *h).collect();
-
-          match manager.register_all(&rust_hotkeys) {
-            Ok(_) => {
-              // Registration succeeded for all parsed hotkeys
-              for (id, hotkey) in &parsed_hotkeys {
-                let rust_id = hotkey.id();
+          // Second pass: register each hotkey individually
+          for (node_id, hotkey) in &parsed_hotkeys {
+            let rust_id = hotkey.id();
+            match manager.register(*hotkey) {
+              Ok(_) => {
                 registered_hotkeys.insert(
-                  *id,
+                  *node_id,
                   RegisteredHotkey {
-                    node_id: *id,
+                    node_id: *node_id,
                     rust_id,
                     hotkey: *hotkey,
                   },
                 );
-                rust_to_node_id.insert(rust_id, *id);
+                rust_to_node_id.insert(rust_id, *node_id);
+                // Result is already Ok(()) in results
               }
-              debug_log(
-                "debug",
-                &format!(
-                  "RegisterAll success: {} hotkeys registered",
-                  parsed_hotkeys.len()
-                ),
-              );
-              send_event(
-                output_buffer,
-                &TriggeredEvent {
-                  action: "registered_all".to_string(),
-                  id: 0,
-                  state: "success".to_string(),
-                },
-              );
-            }
-            Err(e) => {
-              // Batch registration failed - this is a critical error
-              debug_log("error", &format!("RegisterAll batch failed: {}", e));
-              // Send error for each hotkey that would have been registered
-              for (id, _) in &parsed_hotkeys {
-                send_event(
-                  output_buffer,
-                  &TriggeredEvent {
-                    action: "error".to_string(),
-                    id: *id,
-                    state: format!("Failed to register: {}", e),
-                  },
+              Err(e) => {
+                // Update the result for this node_id
+                let error_msg = format!("Failed to register: {}", e);
+                debug_log(
+                  "error",
+                  &format!("Register failed: id={}, error={}", node_id, e),
                 );
+                for (rid, result) in &mut results {
+                  if *rid == *node_id {
+                    *result = Err(error_msg.clone());
+                    break;
+                  }
+                }
               }
-              send_event(
-                output_buffer,
-                &TriggeredEvent {
-                  action: "error".to_string(),
-                  id: 0,
-                  state: format!("Failed to register all: {}", e),
-                },
-              );
             }
+          }
+
+          // Check if all succeeded
+          let all_success = results.iter().all(|(_, r)| r.is_ok());
+          let success_count = results.iter().filter(|(_, r)| r.is_ok()).count();
+
+          debug_log(
+            "debug",
+            &format!(
+              "RegisterAll: {}/{} hotkeys registered",
+              success_count,
+              results.len()
+            ),
+          );
+
+          if all_success {
+            let success_ids: Vec<u32> = results.iter().map(|(id, _)| *id).collect();
+            send_event(
+              output_buffer,
+              OutputEvent::RegisteredAll { ids: success_ids },
+            );
+          } else {
+            let results_vec: Vec<RegisterResult> = results
+              .iter()
+              .map(|(id, result)| match result {
+                Ok(_) => RegisterResult {
+                  id: *id,
+                  error: None,
+                },
+                Err(e) => RegisterResult {
+                  id: *id,
+                  error: Some(e.clone()),
+                },
+              })
+              .collect();
+            send_event(
+              output_buffer,
+              OutputEvent::RegisteredAllPartial {
+                results: results_vec,
+              },
+            );
           }
         }
         Command::UnregisterAll { ids } => {
@@ -596,62 +650,76 @@ fn process_commands(
             &format!("Received unregister_all: {} ids", ids.len()),
           );
 
-          let mut errors: Vec<(u32, String)> = Vec::new();
-          let mut unregistered_count = 0;
+          if ids.is_empty() {
+            debug_log("debug", "UnregisterAll: empty input, returning empty array");
+            send_event(output_buffer, OutputEvent::UnregisteredAll { ids: vec![] });
+            return false;
+          }
+
+          // Build ordered results array maintaining input order
+          // Each entry: (id, Result<(), String>)
+          let mut results: Vec<(u32, Result<(), String>)> = Vec::new();
 
           for &id in &ids {
             if let Some(reg) = registered_hotkeys.remove(&id) {
               rust_to_node_id.remove(&reg.rust_id);
               if let Err(e) = manager.unregister(reg.hotkey) {
-                errors.push((id, format!("Failed to unregister: {}", e)));
+                debug_log(
+                  "error",
+                  &format!("Unregister failed: id={}, error={}", id, e),
+                );
+                results.push((id, Err(format!("Failed to unregister: {}", e))));
               } else {
-                unregistered_count += 1;
+                debug_log("debug", &format!("Unregister success: id={}", id));
+                results.push((id, Ok(())));
               }
+            } else {
+              // ID not found - treat as success (already unregistered)
+              debug_log(
+                "debug",
+                &format!("Unregister: id={} not found, treating as success", id),
+              );
+              results.push((id, Ok(())));
             }
           }
+
+          // Check if all succeeded
+          let all_success = results.iter().all(|(_, r)| r.is_ok());
+          let success_count = results.iter().filter(|(_, r)| r.is_ok()).count();
 
           debug_log(
             "debug",
             &format!(
-              "UnregisterAll: {} unregistered, {} errors",
-              unregistered_count,
-              errors.len()
+              "UnregisterAll: {}/{} hotkeys unregistered",
+              success_count,
+              results.len()
             ),
           );
 
-          // Always send final event
-          if errors.is_empty() {
+          if all_success {
+            let success_ids: Vec<u32> = results.iter().map(|(id, _)| *id).collect();
             send_event(
               output_buffer,
-              &TriggeredEvent {
-                action: "unregistered_all".to_string(),
-                id: 0,
-                state: "success".to_string(),
-              },
+              OutputEvent::UnregisteredAll { ids: success_ids },
             );
           } else {
-            // Send individual errors
-            for (id, error_msg) in &errors {
-              send_event(
-                output_buffer,
-                &TriggeredEvent {
-                  action: "error".to_string(),
+            let results_vec: Vec<UnregisterResult> = results
+              .iter()
+              .map(|(id, result)| match result {
+                Ok(_) => UnregisterResult {
                   id: *id,
-                  state: error_msg.clone(),
+                  error: None,
                 },
-              );
-            }
-            // Still send unregistered_all with partial success info
+                Err(e) => UnregisterResult {
+                  id: *id,
+                  error: Some(e.clone()),
+                },
+              })
+              .collect();
             send_event(
               output_buffer,
-              &TriggeredEvent {
-                action: "unregistered_all".to_string(),
-                id: 0,
-                state: format!(
-                  "partial: {} unregistered, {} failed",
-                  unregistered_count,
-                  errors.len()
-                ),
+              OutputEvent::UnregisteredAllPartial {
+                results: results_vec,
               },
             );
           }
@@ -686,8 +754,7 @@ fn process_hotkey_events(output_buffer: &OutputBuffer, rust_to_node_id: &HashMap
     );
     send_event(
       output_buffer,
-      &TriggeredEvent {
-        action: "triggered".to_string(),
+      OutputEvent::Triggered {
         id: node_id,
         state: state_str.to_string(),
       },
@@ -736,14 +803,7 @@ fn main_impl() {
 
   // Send ready message to indicate sidecar is ready to receive commands
   debug_log("debug", "Sending ready event to stdout");
-  send_event(
-    &output_buffer,
-    &TriggeredEvent {
-      action: "ready".to_string(),
-      id: 0,
-      state: "true".to_string(),
-    },
-  );
+  send_event(&output_buffer, OutputEvent::Ready);
 
   // Set activation policy to Accessory to hide dock icon in MacOS
   #[cfg(target_os = "macos")]
@@ -811,14 +871,7 @@ fn main_impl() {
 
   // Send ready message to indicate sidecar is ready to receive commands
   debug_log("debug", "Sending ready event to stdout");
-  send_event(
-    &output_buffer,
-    &TriggeredEvent {
-      action: "ready".to_string(),
-      id: 0,
-      state: "true".to_string(),
-    },
-  );
+  send_event(&output_buffer, OutputEvent::Ready);
 
   // Simple polling loop - no event loop needed on Linux
   loop {

@@ -333,11 +333,27 @@ class GlobalHotKeyManager {
         case "registered_all": {
           const pending = this.pending.get("register_all");
           if (pending) {
+            const ids = Array.isArray(event.ids) ? event.ids : [];
+            this._log("debug", `Resolved register_all promise with ids=${JSON.stringify(ids)}`);
+            pending.resolve(ids);
+            this.pending.delete("register_all");
+          }
+          break;
+        }
+        case "registered_all_partial": {
+          const pending = this.pending.get("register_all");
+          if (pending) {
+            const results = event.results.map((entry) => {
+              if (entry.error) {
+                return new Error(entry.error);
+              }
+              return entry.id;
+            });
             this._log(
               "debug",
-              `Resolved register_all promise with ids=${JSON.stringify(pending.ids)}`,
+              `Rejected register_all promise with partial results: ${JSON.stringify(results)}`,
             );
-            pending.resolve(pending.ids);
+            pending.reject(results);
             this.pending.delete("register_all");
           }
           break;
@@ -346,7 +362,7 @@ class GlobalHotKeyManager {
           const pending = this.pending.get(event.id);
           if (pending) {
             this._log("debug", `Resolved unregister promise for id=${event.id}`);
-            pending.resolve();
+            pending.resolve(event.id);
             this.pending.delete(event.id);
           }
           break;
@@ -354,29 +370,48 @@ class GlobalHotKeyManager {
         case "unregistered_all": {
           const pending = this.pending.get("unregister_all");
           if (pending) {
-            this._log("debug", `Resolved unregister_all promise`);
-            pending.resolve();
+            const ids = Array.isArray(event.ids) ? event.ids : [];
+            this._log("debug", `Resolved unregister_all promise with ids=${JSON.stringify(ids)}`);
+            pending.resolve(ids);
+            this.pending.delete("unregister_all");
+          }
+          break;
+        }
+        case "unregistered_all_partial": {
+          const pending = this.pending.get("unregister_all");
+          if (pending) {
+            const results = event.results.map((entry) => {
+              if (entry.error) {
+                return new Error(entry.error);
+              }
+              return entry.id;
+            });
+            this._log(
+              "debug",
+              `Rejected unregister_all promise with partial results: ${JSON.stringify(results)}`,
+            );
+            pending.reject(results);
             this.pending.delete("unregister_all");
           }
           break;
         }
         case "error": {
-          this._log("error", `Error from sidecar: ${event.state}`);
+          this._log("error", `Error from sidecar: ${event.message}`);
           // Check if there's a pending promise for this id and reject it
-          if (event.id && event.id !== 0 && this.pending.has(event.id)) {
+          if (event.id != null && this.pending.has(event.id)) {
             const pending = this.pending.get(event.id);
-            pending.reject(new Error(event.state));
+            pending.reject(new Error(event.message));
             this.pending.delete(event.id);
-          } else if (event.id === 0) {
+          } else if (event.id == null) {
             // Check for batch operations - reject with the error message
             if (this.pending.has("register_all")) {
               const pending = this.pending.get("register_all");
-              pending.reject(new Error(event.state));
+              pending.reject(new Error(event.message));
               this.pending.delete("register_all");
             }
             if (this.pending.has("unregister_all")) {
               const pending = this.pending.get("unregister_all");
-              pending.reject(new Error(event.state));
+              pending.reject(new Error(event.message));
               this.pending.delete("unregister_all");
             }
           }
@@ -457,7 +492,7 @@ class GlobalHotKeyManager {
   /**
    * Unregister a hotkey by ID
    * @param {number} id - The hotkey ID returned from register()
-   * @returns {Promise<void>} Promise that resolves when the sidecar confirms unregistration
+   * @returns {Promise<number>} Promise that resolves with the ID when the sidecar confirms unregistration
    */
   unregister(id) {
     if (this.destroyed) {
@@ -490,7 +525,7 @@ class GlobalHotKeyManager {
   /**
    * Register multiple hotkeys at once
    * @param {Array<{hotkey: string, callback: function}>} entries - Array of {hotkey, callback}
-   * @returns {Promise<number[]>} Promise that resolves with array of registered hotkey IDs
+   * @returns {Promise<number[]>} Promise that resolves with array of all IDs if successful, or rejects with (number | Error)[] if any fail
    */
   registerAll(entries) {
     if (entries.length == 0) return Promise.resolve([]);
@@ -539,7 +574,7 @@ class GlobalHotKeyManager {
   /**
    * Unregister multiple hotkeys by ID
    * @param {Array<number>} ids - Array of hotkey IDs
-   * @returns {Promise<void>} Promise that resolves when the sidecar confirms unregistration
+   * @returns {Promise<number[]>} Promise that resolves with array of all IDs if successful, or rejects with (number | Error)[] if any fail
    */
   unregisterAll(ids) {
     if (this.destroyed) {

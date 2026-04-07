@@ -1,14 +1,14 @@
-# Global Shortcuts
+# global-shortcuts
 
-A Node.js and Bun library for reliably registering global keyboard shortcuts.
+A robust, cross-platform Node.js and Bun library for reliably registering global keyboard shortcuts.
 
-It works by spawning a small sidecar Rust process that utilizes [global-hotkey](https://github.com/tauri-apps/global-hotkey) to globally register hotkeys. For MacOS and Windows, [tao](https://github.com/tauri-apps/tao) is used to start the event loop that [global-hotkey](https://github.com/tauri-apps/global-hotkey) requires.
+Under the hood, `global-shortcuts` bypasses the threading limitations and event-loop collisions of native Node.js addons by utilizing a lightweight Rust sidecar. It leverages Tauri's [`global-hotkey`](https://github.com/tauri-apps/global-hotkey) and [`tao`](https://github.com/tauri-apps/tao) crates to guarantee stable, OS-compliant hotkey detection without freezing your JavaScript thread.
 
 ## Platform Support
 
-- **macOS** (x64, arm64)
-- **Windows** (x64, arm64)
-- **Linux** (x64, arm64) - X11 only until [global-hotkey](https://github.com/tauri-apps/global-hotkey) supports Wayland (see [#162](https://github.com/tauri-apps/global-hotkey/pull/162) and [#172](https://github.com/tauri-apps/global-hotkey/pull/172))
+- **macOS:** x64, arm64 (Apple Silicon)
+- **Windows:** x64, arm64
+- **Linux:** x64, arm64 (X11 only until `global-hotkey` merges Wayland support via [#162](https://github.com/tauri-apps/global-hotkey/pull/162) and [#172](https://github.com/tauri-apps/global-hotkey/pull/172))
 
 ## Installation
 
@@ -16,188 +16,196 @@ It works by spawning a small sidecar Rust process that utilizes [global-hotkey](
 npm install global-shortcuts
 ```
 
-## Usage
+_Note: Pre-compiled, highly optimized Rust binaries for your specific operating system and architecture are automatically resolved during installation._
+
+## Quick Start
 
 ```typescript
 import { GlobalHotKeyManager } from "global-shortcuts";
 
-// Create a manager instance
-const manager = new GlobalHotKeyManager();
+async function main() {
+  // 1. Initialize the manager (spawns the Rust sidecar process)
+  const manager = new GlobalHotKeyManager();
 
-// Register a hotkey
-const id = await manager.register("ctrl+shift+a", (id, state) => {
-  console.log(`Hotkey pressed: ${state}`);
-});
+  // 2. Register a single hotkey
+  const id = await manager.register("ctrl+shift+a", (id, state) => {
+    console.log(`Hotkey pressed! State: ${state}`);
+  });
 
-// Register multiple hotkeys
-const ids = await manager.registerAll([
-  { hotkey: "ctrl+b", callback: (id, state) => console.log("ctrl+b") },
-  { hotkey: "alt+f1", callback: (id, state) => console.log("alt+f1") },
-]);
+  // 3. Register multiple hotkeys simultaneously
+  const ids = await manager.registerAll([
+    { hotkey: "cmdorctrl+b", callback: () => console.log("Action B triggered") },
+    { hotkey: "alt+f1", callback: () => console.log("Action C triggered") },
+  ]);
 
-// Unregister when done
-await manager.unregister(id);
+  // 4. Clean up specific hotkeys or multiple hotkeys
+  await manager.unregister(id);
+  await manager.unregisterAll(ids);
 
-// Or unregister all
-await manager.unregisterAll(ids);
+  // Note: The manager automatically cleans up all hotkeys and kills the
+  // sidecar process when the Node.js process exits.
+}
 
-// Clean up (optional - happens automatically on process exit)
-manager.destroy();
+main();
 ```
 
-## Cleanup
+## API Reference
 
-The module automatically cleans up all manager instances when the process exits with a `process.on('beforeExit', ...)` hook. You can also manually call `destroy()` to clean up.
+### Process Architecture
 
-## API
+```text
+┌─────────────────────────┐           ┌───────────────────────────┐
+│   Node.js/Bun Process   │           │    Rust Sidecar Process   │
+│ ┌─────────────────────┐ │           │ ┌───────────────────────┐ │
+│ │  GlobalHotKeyManager│ │── stdin ─▶│ │ Background I/O Thread │ │
+│ └─────────────────────┘ │           │ └───────────────────────┘ │
+│            ▲            │           │             ▼             │
+│            │            │           │ ┌───────────────────────┐ │
+│            └────────────│◀─ stdout ─│ │ Main Thread (OS Loop) │ │
+└─────────────────────────┘           │ └───────────────────────┘ │
+                                      └───────────────────────────┘
+```
 
-### `new GlobalHotKeyManager(options?)`
+### Class: `GlobalHotKeyManager`
+
+#### `new GlobalHotKeyManager(options?)`
 
 Creates a new manager instance and spawns the Rust sidecar process.
 
-- `options.debug` - Enable debug logging (default: uses `DEBUG` env var)
-- `options.binaryPath` - Explicit path to the sidecar binary. When provided, this path is used directly instead of auto-detection. Useful for custom builds or non-standard installations.
+- **`options.debug`** _(boolean)_: Enables debug logging. Alternatively, you can set the environment variable `DEBUG=true` or `DEBUG=global-shortcuts`.
+- **`options.binaryPath`** _(string)_: Explicit path to the sidecar binary. If provided, bypasses auto-detection. Useful for custom builds or non-standard deployment environments.
 
-### `manager.id`
+#### Properties
 
-Unique identifier for this manager instance.
+- **`manager.id`**: A unique identifier for this specific manager instance.
+- **`manager.ready`**: _(boolean)_ Indicates if the sidecar process is fully booted and ready. Commands sent before `ready === true` are automatically queued and executed once the sidecar connects.
 
-### `manager.ready`
+#### Methods
 
-Whether the sidecar process is ready to receive commands. Commands sent before ready are queued automatically.
+- **`register(hotkey: string, callback?: Function): Promise<number>`**
 
-### `register(hotkey, callback?): Promise<number>`
+  Registers a global hotkey.
+  - `callback(id, state)`: Fired when the hotkey is triggered. `state` is either `"Pressed"` or `"Released"`.
+    = Resolves with a unique integer ID.
+  - Rejects with an Error if registration fails (e.g., invalid hotkey format, OS error).
 
-Register a global hotkey. Returns a unique ID for the registration.
+- **`unregister(id: number): Promise<number>`**
 
-- `hotkey` - String like "ctrl+shift+a", "alt+f1", etc.
-- `callback` - Called with `(id, state)` when the hotkey is triggered
-  - `state` is either `"Pressed"` or `"Released"`
+  Unregisters a specific hotkey using its ID.
+  - Resolves with the ID when successfully unregistered.
+  - If the ID was not found (already unregistered), it still resolves successfully.
 
-### `unregister(id): Promise<void>`
+- **`registerAll(entries: {hotkey: string, callback?: Function}[]): Promise<number[]>`**
 
-Unregister a hotkey by its ID.
+  Registers multiple hotkeys at once. Each hotkey is registered individually.
+  - If **all** succeed: resolves with an array of all IDs in input order.
+  - If **any** fail: rejects with an array of `(number | Error)[]` in input order, where successful entries are IDs and failed entries are Error objects.
 
-### `registerAll(entries): Promise<number[]>`
+- **`unregisterAll(ids: number[]): Promise<number[]>`**
 
-Register multiple hotkeys at once.
+  Unregisters multiple hotkeys by their IDs. Each hotkey is unregistered individually.
+  - If **all** succeed: resolves with an array of all IDs in input order.
+  - If **any** fail: rejects with an array of `(number | Error)[]` in input order, where successful entries are IDs and failed entries are Error objects.
+  - IDs that are not found (already unregistered) are treated as successful.
 
-- `entries` - Array of `{ hotkey: string, callback?: function }`
+- **`destroy(): void`**
 
-### `unregisterAll(ids): Promise<void>`
+  Manually kills the sidecar process and clears all listeners. Safe to call multiple times.
 
-Unregister multiple hotkeys by their IDs.
+  Automatically triggered on `process.on('beforeExit')`.
 
-### `destroy(): void`
+### Hotkey Formatting Guidelines
 
-Destroy the manager and kill the sidecar process. Safe to call multiple times.
+Hotkeys are defined as strings with modifiers separated by `+`. The main key must come last. Order of modifiers does not matter.
 
-## Supported Hotkeys
+**Format:** `modifier1+modifier2+...+key`
 
-All standard modifiers and keys are supported:
+**Supported Modifiers:**
 
-**Modifiers:** `ctrl`, `control`, `shift`, `alt`, `option`, `super`, `cmd`, `command`, `meta`, `windows`, `cmdorctrl`
+- `ctrl`, `control`
+- `shift`
+- `alt`, `option`
+- `super`, `cmd`, `command`, `meta`, `windows`
+- `cmdorctrl` _(Dynamically maps to `cmd` on macOS and `ctrl` on Windows/Linux)_
 
-**Keys:** All letters (a-z), digits (0-9), function keys (f1-f24), special keys (space, enter, tab, escape, etc.), arrow keys, numpad keys, and media keys (volume, play/pause, etc.)
+**Supported Keys:**
+All standard letters (`a-z`), digits (`0-9`), function keys (`f1-f24`), special keys (`space`, `enter`, `tab`, `escape`), arrow keys, numpad keys, and media keys.
 
-### Examples
-
-```typescript
-// Simple key
-manager.register("a", callback);
-
-// With modifiers
-manager.register("ctrl+a", callback);
-manager.register("ctrl+shift+a", callback);
-manager.register("alt+f1", callback);
-
-// Platform-aware
-manager.register("cmdorctrl+s", callback); // Cmd on Mac, Ctrl on Windows/Linux
-```
-
-## Hotkey Format
-
-Hotkeys are specified as strings with modifiers separated by `+` and the main key last:
-
-```
-modifier1+modifier2+...+key
-```
-
-Order doesn't matter, but modifiers must come before the main key.
-
-## Architecture
-
-```
-┌─────────────────────────┐
-│   Node.js Process       │
-│   ┌─────────────────┐   │
-│   │ JS Wrapper      │   │
-│   │ (index.js)      │   │
-│   └────────┬────────┘   │
-│            │            │
-│   stdin/stdout JSON     │
-│            │            │
-└────────────┼────────────┘
-             │
-┌────────────┼──────────────┐
-│   Rust Sidecar Process    │
-│            ▼              │
-│   ┌─────────────────┐     │
-│   │ stdin reader    │     │
-│   │ (background)    │     │
-│   └────────┬────────┘     │
-│            │              │
-│   ┌────────▼────────┐     │
-│   │ Event Loop      │     │
-│   │ (Main Thread)   │     │
-│   │                 │     │
-│   │ GlobalHotkey    │     │
-│   │ Manager         │     │
-│   └─────────────────┘     │
-└───────────────────────────┘
-```
-
-## Debug Mode
-
-Enable debug logging by setting the `DEBUG` environment variable:
-
-```bash
-DEBUG=true node your-script.js
-DEBUG=global-shortcuts node your-script.js
-```
-
-Or enable it in the constructor:
+**Examples:**
 
 ```typescript
-const manager = new GlobalHotKeyManager({ debug: true });
+manager.register("a", callback); // Single key
+manager.register("ctrl+shift+a", callback); // Multiple modifiers
+manager.register("cmdorctrl+s", callback); // Cross-platform save shortcut
 ```
 
-## Standalone Binaries
+## Standalone Usage
 
-Pre-compiled Rust sidecar binaries are available in the [GitHub Releases](https://github.com/rzkyif/global-shortcuts/releases) for each platform and architecture. These binaries are intended for manual sidecar usage only.
+While `global-shortcuts` is designed to be consumed as a Node/Bun package, the underlying engine is a standalone executable. Pre-compiled binaries are available in the [GitHub Releases](https://github.com/rzkyif/global-shortcuts/releases) tab.
 
-> **Recommended Usage:** For most users, the recommended approach is to install the NPM package (`npm install global-shortcuts`) and let `index.js` automatically manage the sidecar process. See the [Usage](#usage) section above for instructions.
+### Stdin / Stdout JSON Protocol
 
-### Available Binaries
+If you wish to use the binary in a different ecosystem (e.g., Python, Go, or a shell script), you can interact with it directly by piping JSON payloads to `stdin` and reading events from `stdout`.
 
-| Platform | Architecture          | Binary Name                          |
-| -------- | --------------------- | ------------------------------------ |
-| macOS    | Apple Silicon (arm64) | `global-shortcuts-macos-arm64`       |
-| macOS    | Intel (x86_64)        | `global-shortcuts-macos-x64`         |
-| Linux    | x86_64                | `global-shortcuts-linux-x64`         |
-| Linux    | ARM64                 | `global-shortcuts-linux-arm64`       |
-| Windows  | x64                   | `global-shortcuts-windows-x64.exe`   |
-| Windows  | ARM64                 | `global-shortcuts-windows-arm64.exe` |
+#### 1. Send a command (Input via `stdin`)
 
-### Manual Usage
+Send a single-line JSON string to the binary. You must provide a unique integer `id`.
 
-Download the appropriate binary for your platform and run it directly. The sidecar accepts JSON commands via stdin and outputs events via stdout:
+```json
+{ "action": "register", "hotkey": "ctrl+shift+a", "id": 1 }
+```
+
+#### 2. Listen for result (Output via `stdout`)
+
+When the OS detects the hardware keypress, the binary outputs a JSON string to `stdout`.
+
+```json
+{ "action": "event", "id": 1, "state": "Pressed" }
+```
+
+### Shell Example
 
 ```bash
-# Example: Start the sidecar and send a register command
-echo '{"action":"register","hotkey":"ctrl+shift+a","id":1}' | ./global-shortcuts-macos-arm64
+# Start the macOS arm64 sidecar and register a hotkey
+echo '{"action":"register", "hotkey":"ctrl+shift+a", "id":1}' | ./global-shortcuts-macos-arm64
 ```
+
+### Stdin Commands (Inputs)
+
+The sidecar accepts JSON commands via stdin. Each command is a single-line JSON object with an `"action"` field:
+
+| Action           | Fields                                               | Description                                                                                                      |
+| ---------------- | ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `register`       | `hotkey` (string), `id` (integer)                    | Register a single global hotkey.                                                                                 |
+| `unregister`     | `id` (integer)                                       | Unregister a previously registered hotkey by its ID. If the ID is not found, the response is still successful.   |
+| `register_all`   | `hotkeys` (array of `{hotkey: string, id: integer}`) | Register multiple hotkeys at once. Each hotkey is processed individually.                                        |
+| `unregister_all` | `ids` (array of integers)                            | Unregister multiple hotkeys at once. Each ID is processed individually. IDs not found are treated as successful. |
+
+### Stdout Events (Outputs)
+
+The sidecar outputs JSON events to stdout. Each event is a single-line JSON object:
+
+| Action                     | Fields                                     | Description                                                                                                         |
+| -------------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------- |
+| `ready`                    | _(none)_                                   | Sent once when the sidecar has finished initializing and is ready to receive commands.                              |
+| `registered`               | `id` (integer)                             | Confirms a single hotkey was registered successfully.                                                               |
+| `unregistered`             | `id` (integer)                             | Confirms a single hotkey was unregistered successfully (also sent if ID was not found).                             |
+| `registered_all`           | `ids` (array of integers)                  | All hotkeys from a `register_all` command were registered successfully. Contains the array of registered IDs.       |
+| `registered_all_partial`   | `results` (array of objects)               | Some hotkeys failed to register. Each object contains `id` and optionally `error` with the failure message.         |
+| `unregistered_all`         | `ids` (array of integers)                  | All IDs from an `unregister_all` command were unregistered successfully. Contains the array of unregistered IDs.    |
+| `unregistered_all_partial` | `results` (array of objects)               | Some IDs failed to unregister. Each object contains `id` and optionally `error` with the failure message.           |
+| `triggered`                | `id` (integer), `state` (string)           | Fired when a registered hotkey is pressed or released. `state` is `"Pressed"` or `"Released"`.                      |
+| `error`                    | `id` (integer or null), `message` (string) | An error occurred during registration or unregistration. `id` is null for errors not associated with a specific ID. |
+
+### Stderr Debug Logs
+
+When `DEBUG=true` or `DEBUG=global-shortcuts` is set in the environment, debug logs are written to stderr as single-line JSON objects:
+
+| Field     | Type                   | Description                   |
+| --------- | ---------------------- | ----------------------------- |
+| `level`   | `"debug"` or `"error"` | The log level.                |
+| `message` | string                 | Human-readable debug message. |
 
 ## License
 
-MIT
+[MIT](./LICENSE)

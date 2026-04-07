@@ -88,23 +88,23 @@ export class GlobalHotKeyManager {
   /**
    * Unregister a hotkey by ID
    * @param id - The hotkey ID returned from register()
-   * @returns Promise that resolves when the unregistration is processed
+   * @returns Promise that resolves with the ID when the unregistration is processed
    */
-  unregister(id: number): Promise<void>;
+  unregister(id: number): Promise<number>;
 
   /**
    * Register multiple hotkeys at once
    * @param entries - Array of {hotkey, callback} objects
-   * @returns Promise that resolves with array of registered hotkey IDs when the sidecar confirms
+   * @returns Promise that resolves with array of all IDs if successful, or rejects with (number | Error)[] if any fail
    */
   registerAll(entries: HotKeyEntry[]): Promise<number[]>;
 
   /**
    * Unregister multiple hotkeys by ID
    * @param ids - Array of hotkey IDs
-   * @returns Promise that resolves when the unregistration is confirmed
+   * @returns Promise that resolves with array of all IDs if successful, or rejects with (number | Error)[] if any fail
    */
-  unregisterAll(ids: number[]): Promise<void>;
+  unregisterAll(ids: number[]): Promise<number[]>;
 
   /**
    * Destroy the manager and kill the sidecar process
