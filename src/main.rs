@@ -1,10 +1,4 @@
-//! Global Shortcuts
-//!
-//! A standalone executable that registers global hotkeys using the system's native event loop.
-//! Communication with Node.js happens via stdin/stdout JSON messages.
-//!
-//! On macOS and Windows, this uses Tao's event loop (required by global-hotkey).
-//! On Linux, this uses a simple polling loop without Tao.
+//! Global Shortcuts - Registers global hotkeys via stdin/stdout JSON protocol.
 
 use global_hotkey::hotkey::HotKey as RustHotKey;
 use global_hotkey::{
@@ -19,12 +13,10 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 
-// Tao imports - only available on macOS and Windows
 #[cfg(not(target_os = "linux"))]
 use std::time::Instant;
 #[cfg(not(target_os = "linux"))]
 use tao::event_loop::ControlFlow;
-
 #[cfg(target_os = "macos")]
 use tao::platform::macos::EventLoopExtMacOS;
 
@@ -53,65 +45,29 @@ pub struct HotKeyEntry {
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "action")]
 pub enum OutputEvent {
-  /// Sidecar is ready to receive commands
   #[serde(rename = "ready")]
   Ready,
-  /// Single hotkey registered successfully
   #[serde(rename = "registered")]
   Registered { id: u32 },
-  /// Single hotkey unregistered successfully
   #[serde(rename = "unregistered")]
   Unregistered { id: u32 },
-  /// All hotkeys registered successfully
   #[serde(rename = "registered_all")]
-  RegisteredAll {
-    #[serde(serialize_with = "serialize_vec", default)]
-    ids: Vec<u32>,
-  },
-  /// Some hotkeys failed to register
+  RegisteredAll { ids: Vec<u32> },
   #[serde(rename = "registered_all_partial")]
-  RegisteredAllPartial { results: Vec<RegisterResult> },
-  /// All hotkeys unregistered successfully
+  RegisteredAllPartial { results: Vec<BatchResult> },
   #[serde(rename = "unregistered_all")]
-  UnregisteredAll {
-    #[serde(serialize_with = "serialize_vec", default)]
-    ids: Vec<u32>,
-  },
-  /// Some IDs failed to unregister
+  UnregisteredAll { ids: Vec<u32> },
   #[serde(rename = "unregistered_all_partial")]
-  UnregisteredAllPartial { results: Vec<UnregisterResult> },
-  /// Hotkey was pressed or released
+  UnregisteredAllPartial { results: Vec<BatchResult> },
   #[serde(rename = "triggered")]
   Triggered { id: u32, state: String },
-  /// Error during operation
   #[serde(rename = "error")]
   Error { id: Option<u32>, message: String },
 }
 
-/// Ensure Vec is always serialized, even when empty
-fn serialize_vec<S>(vec: &[u32], serializer: S) -> Result<S::Ok, S::Error>
-where
-  S: serde::Serializer,
-{
-  use serde::ser::SerializeSeq;
-  let mut seq = serializer.serialize_seq(Some(vec.len()))?;
-  for item in vec {
-    seq.serialize_element(item)?;
-  }
-  seq.end()
-}
-
-/// Result entry for register_all_partial
+/// Generic result entry for batch operations
 #[derive(Debug, Clone, Serialize)]
-pub struct RegisterResult {
-  pub id: u32,
-  #[serde(skip_serializing_if = "Option::is_none")]
-  pub error: Option<String>,
-}
-
-/// Result entry for unregister_all_partial
-#[derive(Debug, Clone, Serialize)]
-pub struct UnregisterResult {
+pub struct BatchResult {
   pub id: u32,
   #[serde(skip_serializing_if = "Option::is_none")]
   pub error: Option<String>,
@@ -349,26 +305,21 @@ fn process_commands(
 
           // First pass: parse all hotkeys
           let mut parsed_hotkeys: Vec<(u32, RustHotKey)> = Vec::new();
-          let mut parse_errors: std::collections::HashMap<u32, String> =
-            std::collections::HashMap::new();
+          let mut parse_errors: HashMap<u32, String> = HashMap::new();
 
           for entry in &hotkeys {
             match entry.hotkey.parse::<RustHotKey>() {
-              Ok(rust_hotkey) => {
-                parsed_hotkeys.push((entry.id, rust_hotkey));
-              }
+              Ok(hk) => parsed_hotkeys.push((entry.id, hk)),
               Err(e) => {
                 parse_errors.insert(entry.id, format!("Failed to parse hotkey: {}", e));
               }
             }
           }
 
-          // Initialize results with parse errors
           for entry in &hotkeys {
             if let Some(err) = parse_errors.get(&entry.id) {
               results.push((entry.id, Err(err.clone())));
             } else {
-              // Placeholder - will be updated after registration
               results.push((entry.id, Ok(())));
             }
           }
@@ -387,10 +338,8 @@ fn process_commands(
                   },
                 );
                 rust_to_node_id.insert(rust_id, *node_id);
-                // Result is already Ok(()) in results
               }
               Err(e) => {
-                // Update the result for this node_id
                 let error_msg = format!("Failed to register: {}", e);
                 debug_log(
                   "error",
@@ -409,7 +358,6 @@ fn process_commands(
           // Check if all succeeded
           let all_success = results.iter().all(|(_, r)| r.is_ok());
           let success_count = results.iter().filter(|(_, r)| r.is_ok()).count();
-
           debug_log(
             "debug",
             &format!(
@@ -419,34 +367,34 @@ fn process_commands(
             ),
           );
 
+          let success_ids: Vec<u32> = results.iter().map(|(id, _)| *id).collect();
           if all_success {
-            let success_ids: Vec<u32> = results.iter().map(|(id, _)| *id).collect();
             send_event(
               output_buffer,
               OutputEvent::RegisteredAll { ids: success_ids },
             );
           } else {
-            let results_vec: Vec<RegisterResult> = results
-              .iter()
-              .map(|(id, result)| match result {
-                Ok(_) => RegisterResult {
-                  id: *id,
-                  error: None,
-                },
-                Err(e) => RegisterResult {
-                  id: *id,
-                  error: Some(e.clone()),
-                },
-              })
-              .collect();
             send_event(
               output_buffer,
               OutputEvent::RegisteredAllPartial {
-                results: results_vec,
+                results: results
+                  .iter()
+                  .map(|(id, r)| match r {
+                    Ok(_) => BatchResult {
+                      id: *id,
+                      error: None,
+                    },
+                    Err(e) => BatchResult {
+                      id: *id,
+                      error: Some(e.clone()),
+                    },
+                  })
+                  .collect(),
               },
             );
           }
         }
+
         Command::UnregisterAll { ids } => {
           debug_log(
             "debug",
@@ -489,7 +437,6 @@ fn process_commands(
           // Check if all succeeded
           let all_success = results.iter().all(|(_, r)| r.is_ok());
           let success_count = results.iter().filter(|(_, r)| r.is_ok()).count();
-
           debug_log(
             "debug",
             &format!(
@@ -499,30 +446,29 @@ fn process_commands(
             ),
           );
 
+          let success_ids: Vec<u32> = results.iter().map(|(id, _)| *id).collect();
           if all_success {
-            let success_ids: Vec<u32> = results.iter().map(|(id, _)| *id).collect();
             send_event(
               output_buffer,
               OutputEvent::UnregisteredAll { ids: success_ids },
             );
           } else {
-            let results_vec: Vec<UnregisterResult> = results
-              .iter()
-              .map(|(id, result)| match result {
-                Ok(_) => UnregisterResult {
-                  id: *id,
-                  error: None,
-                },
-                Err(e) => UnregisterResult {
-                  id: *id,
-                  error: Some(e.clone()),
-                },
-              })
-              .collect();
             send_event(
               output_buffer,
               OutputEvent::UnregisteredAllPartial {
-                results: results_vec,
+                results: results
+                  .iter()
+                  .map(|(id, r)| match r {
+                    Ok(_) => BatchResult {
+                      id: *id,
+                      error: None,
+                    },
+                    Err(e) => BatchResult {
+                      id: *id,
+                      error: Some(e.clone()),
+                    },
+                  })
+                  .collect(),
               },
             );
           }

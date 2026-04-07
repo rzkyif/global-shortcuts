@@ -6,84 +6,64 @@ const fs = require("fs");
 
 const DEBUG = process.env.DEBUG === "true" || process.env.DEBUG === "global-shortcuts";
 
+// Platform-specific configuration for binary resolution
+const PLATFORM_CONFIG = {
+  darwin: {
+    name: "macos",
+    targets: { arm64: "aarch64-apple-darwin", x64: "x86_64-apple-darwin" },
+    ext: "",
+  },
+  win32: {
+    name: "windows",
+    targets: { arm64: "aarch64-pc-windows-msvc", x64: "x86_64-pc-windows-msvc" },
+    ext: ".exe",
+  },
+  linux: {
+    name: "linux",
+    targets: { arm64: "aarch64-unknown-linux-gnu", x64: "x86_64-unknown-linux-gnu" },
+    ext: "",
+  },
+};
+
 /**
- * Get the Rust target triple based on platform and architecture
+ * Get platform configuration with binary name and target triple
+ * @returns {{ binaryName: string, target: string, ext: string }}
  */
-function getRustTargetTriple() {
-  const platform = process.platform;
-  const arch = process.arch;
+function getPlatformConfig() {
+  const { platform, arch } = process;
+  const config = PLATFORM_CONFIG[platform];
+  if (!config) throw new Error(`Unsupported platform: ${platform}`);
 
-  switch (platform) {
-    case "darwin":
-      return arch === "arm64" ? "aarch64-apple-darwin" : "x86_64-apple-darwin";
-    case "win32":
-      return arch === "arm64" ? "aarch64-pc-windows-msvc" : "x86_64-pc-windows-msvc";
-    case "linux":
-      return arch === "arm64" ? "aarch64-unknown-linux-gnu" : "x86_64-unknown-linux-gnu";
-    default:
-      return null;
-  }
-}
-
-/**
- * Get the binary name based on platform and architecture
- * Matches the naming convention used in publish.yml and build.yml workflows
- */
-function getBinaryName() {
-  const platform = process.platform;
-  const arch = process.arch;
-
-  // Normalize architecture names - only x64 and arm64 are supported
-  const normalizedArch = arch === "x64" ? "x64" : arch === "arm64" ? "arm64" : null;
-
-  // Normalize platform names
-  let normalizedPlatform;
-  switch (platform) {
-    case "darwin":
-      normalizedPlatform = "macos";
-      break;
-    case "win32":
-      normalizedPlatform = "windows";
-      break;
-    case "linux":
-      normalizedPlatform = "linux";
-      break;
-    default:
-      throw new Error(`Unsupported platform: ${platform}`);
-  }
-
-  if (!normalizedArch) {
+  if (!["x64", "arm64"].includes(arch)) {
     throw new Error(`Unsupported architecture: ${arch}. Only x64 and arm64 are supported.`);
   }
 
-  return `global-shortcuts-${normalizedPlatform}-${normalizedArch}`;
+  const target = config.targets[arch];
+  if (!target) throw new Error(`Unsupported architecture ${arch} for platform ${platform}`);
+
+  return {
+    binaryName: `global-shortcuts-${config.name}-${arch}`,
+    target,
+    ext: config.ext,
+  };
 }
 
 /**
- * Verify that a file is a regular file (not a symlink, directory, etc.)
- * and has appropriate permissions for the platform
- * @param {string} filePath - The path to verify
- * @returns {boolean} Whether the file is a valid executable
+ * Verify that a file is a regular file and has appropriate permissions
  */
 function isValidExecutable(filePath) {
   try {
     const stats = fs.statSync(filePath);
+    if (!stats.isFile()) return false;
 
-    // Must be a regular file
-    if (!stats.isFile()) {
-      return false;
-    }
-
-    // On Unix-like systems, verify it's executable or make it executable
+    // Ensure executable permission on Unix-like systems
     if (process.platform !== "win32") {
       try {
         fs.accessSync(filePath, fs.constants.X_OK);
       } catch {
-        // File exists but is not executable, make it executable
         fs.chmodSync(filePath, 0o755);
       }
     }
-
     return true;
   } catch {
     return false;
@@ -93,56 +73,30 @@ function isValidExecutable(filePath) {
 /**
  * Find the sidecar binary path with strict security checks
  *
- * Binary is always relative to where index.js lives (__dirname):
- * 1. Development builds: __dirname/target/release/global-shortcuts
- * 2. Published npm packages (optionalDependencies as siblings):
- *    - __dirname/node_modules/<binary-name>/<binary-name> (normal install)
- *    - __dirname/../<binary-name>/<binary-name> (when package is inside another project's node_modules)
+ * Development builds use "global-shortcuts" (from cargo build),
+ * while npm published packages use "global-shortcuts-<platform>-<arch>"
  */
 function findBinary() {
-  const binaryName = getBinaryName();
+  const { binaryName, target, ext } = getPlatformConfig();
+  const base = __dirname;
+  const devBinaryName = `global-shortcuts${ext}`; // cargo build output
+  const pkgBinaryName = `${binaryName}${ext}`; // npm package output
 
-  // __dirname is the package root (where index.js is located)
-  const packageDir = __dirname;
+  const possiblePaths = [
+    // Development builds
+    path.join(base, "target", target, "release", devBinaryName),
+    path.join(base, "target", "release", devBinaryName),
+    // NPM published packages
+    path.join(base, "node_modules", binaryName, pkgBinaryName),
+    path.join(base, "..", binaryName, pkgBinaryName),
+  ];
 
-  // Possible binary locations (all relative to package root)
-  const possiblePaths = [];
-  const rustTarget = getRustTargetTriple();
-
-  if (process.platform === "win32") {
-    // Windows: only search for .exe variants
-    possiblePaths.push(
-      // CI builds with --target flag (e.g., target/x86_64-pc-windows-msvc/release/)
-      path.join(packageDir, "target", rustTarget, "release", "global-shortcuts.exe"),
-      // Local builds without --target flag
-      path.join(packageDir, "target", "release", "global-shortcuts.exe"),
-      // npm published packages
-      path.join(packageDir, "node_modules", binaryName, `${binaryName}.exe`),
-      path.join(packageDir, "..", binaryName, `${binaryName}.exe`),
-    );
-  } else {
-    // Unix-like: no extension
-    possiblePaths.push(
-      // CI builds with --target flag (e.g., target/x86_64-apple-darwin/release/)
-      path.join(packageDir, "target", rustTarget, "release", "global-shortcuts"),
-      // Local builds without --target flag
-      path.join(packageDir, "target", "release", "global-shortcuts"),
-      // npm published packages
-      path.join(packageDir, "node_modules", binaryName, binaryName),
-      path.join(packageDir, "..", binaryName, binaryName),
-    );
-  }
-
-  // Search for the binary
   for (const binPath of possiblePaths) {
-    if (isValidExecutable(binPath)) {
-      return binPath;
-    }
+    if (isValidExecutable(binPath)) return binPath;
   }
 
-  // No binary found in allowed locations
   throw new Error(
-    `Could not find sidecar binary '${binaryName}'. ` +
+    `Could not find sidecar binary '${pkgBinaryName}'. ` +
       `Please ensure the package is properly installed. ` +
       `Searched locations: ${possiblePaths.join(", ")}`,
   );
@@ -298,19 +252,19 @@ class GlobalHotKeyManager {
     try {
       const event = JSON.parse(message);
 
+      let key, ids, results, pending;
       switch (event.action) {
-        case "ready": {
+        case "ready":
           if (!this.ready) {
             this.ready = true;
             this._log("debug", "Sidecar is ready, processing queued commands");
-            // Process any queued registrations
             for (const cmd of this.readyQueue) {
               this._writeToStdin(cmd);
             }
             this.readyQueue = [];
           }
           break;
-        }
+
         case "triggered": {
           const callback = this.callbacks.get(event.id);
           if (callback) {
@@ -321,102 +275,66 @@ class GlobalHotKeyManager {
           }
           break;
         }
-        case "registered": {
-          const pending = this.pending.get(event.id);
+
+        case "registered":
+        case "unregistered":
+          pending = this.pending.get(event.id);
           if (pending) {
-            this._log("debug", `Resolved registration promise for id=${event.id}`);
+            this._log("debug", `Resolved promise for id=${event.id}`);
             pending.resolve(event.id);
             this.pending.delete(event.id);
           }
           break;
-        }
-        case "registered_all": {
-          const pending = this.pending.get("register_all");
+
+        case "registered_all":
+        case "unregistered_all":
+          key = event.action === "registered_all" ? "register_all" : "unregister_all";
+          ids = event.ids || [];
+          pending = this.pending.get(key);
           if (pending) {
-            const ids = Array.isArray(event.ids) ? event.ids : [];
-            this._log("debug", `Resolved register_all promise with ids=${JSON.stringify(ids)}`);
+            this._log("debug", `Resolved ${key} promise with ids=${JSON.stringify(ids)}`);
             pending.resolve(ids);
-            this.pending.delete("register_all");
+            this.pending.delete(key);
           }
           break;
-        }
-        case "registered_all_partial": {
-          const pending = this.pending.get("register_all");
+
+        case "registered_all_partial":
+        case "unregistered_all_partial":
+          key = event.action === "registered_all_partial" ? "register_all" : "unregister_all";
+          results = event.results;
+          pending = this.pending.get(key);
           if (pending) {
-            const results = event.results.map((entry) => {
-              if (entry.error) {
-                return new Error(entry.error);
-              }
-              return entry.id;
-            });
+            const mappedResults = results.map((entry) =>
+              entry.error ? new Error(entry.error) : entry.id,
+            );
             this._log(
               "debug",
-              `Rejected register_all promise with partial results: ${JSON.stringify(results)}`,
+              `Rejected ${key} promise with results=${JSON.stringify(mappedResults)}`,
             );
-            pending.reject(results);
-            this.pending.delete("register_all");
+            pending.reject(mappedResults);
+            this.pending.delete(key);
           }
           break;
-        }
-        case "unregistered": {
-          const pending = this.pending.get(event.id);
-          if (pending) {
-            this._log("debug", `Resolved unregister promise for id=${event.id}`);
-            pending.resolve(event.id);
-            this.pending.delete(event.id);
-          }
-          break;
-        }
-        case "unregistered_all": {
-          const pending = this.pending.get("unregister_all");
-          if (pending) {
-            const ids = Array.isArray(event.ids) ? event.ids : [];
-            this._log("debug", `Resolved unregister_all promise with ids=${JSON.stringify(ids)}`);
-            pending.resolve(ids);
-            this.pending.delete("unregister_all");
-          }
-          break;
-        }
-        case "unregistered_all_partial": {
-          const pending = this.pending.get("unregister_all");
-          if (pending) {
-            const results = event.results.map((entry) => {
-              if (entry.error) {
-                return new Error(entry.error);
-              }
-              return entry.id;
-            });
-            this._log(
-              "debug",
-              `Rejected unregister_all promise with partial results: ${JSON.stringify(results)}`,
-            );
-            pending.reject(results);
-            this.pending.delete("unregister_all");
-          }
-          break;
-        }
-        case "error": {
+
+        case "error":
           this._log("error", `Error from sidecar: ${event.message}`);
-          // Check if there's a pending promise for this id and reject it
-          if (event.id != null && this.pending.has(event.id)) {
+          if (event.id != null) {
             const pending = this.pending.get(event.id);
-            pending.reject(new Error(event.message));
-            this.pending.delete(event.id);
-          } else if (event.id == null) {
-            // Check for batch operations - reject with the error message
-            if (this.pending.has("register_all")) {
-              const pending = this.pending.get("register_all");
+            if (pending) {
               pending.reject(new Error(event.message));
-              this.pending.delete("register_all");
+              this.pending.delete(event.id);
             }
-            if (this.pending.has("unregister_all")) {
-              const pending = this.pending.get("unregister_all");
-              pending.reject(new Error(event.message));
-              this.pending.delete("unregister_all");
+          } else {
+            for (const key of ["register_all", "unregister_all"]) {
+              const pending = this.pending.get(key);
+              if (pending) {
+                pending.reject(new Error(event.message));
+                this.pending.delete(key);
+              }
             }
           }
           break;
-        }
+
         default:
           this._log("error", `Unknown message type: ${event.action}`);
       }
@@ -426,16 +344,36 @@ class GlobalHotKeyManager {
   }
 
   /**
+   * Send a command to the sidecar, handling ready queueing and pending promise creation
+   */
+  _sendCommand(command, pendingKey, description) {
+    if (this.destroyed) {
+      return Promise.reject(new Error("GlobalHotKeyManager has been destroyed"));
+    }
+
+    this._log("debug", description);
+
+    const promise = new Promise((resolve, reject) => {
+      this.pending.set(pendingKey, { resolve, reject });
+    });
+
+    if (this.ready) {
+      this._writeToStdin(command);
+    } else {
+      this._log("debug", `Sidecar not ready yet, queuing command`);
+      this.readyQueue.push(command);
+    }
+
+    return promise;
+  }
+
+  /**
    * Write command to stdin
    */
   _writeToStdin(command) {
-    if (this.destroyed) {
-      this._log("debug", `Cannot write to stdin: manager destroyed`);
-      return;
-    }
+    if (this.destroyed) return;
     const message = JSON.stringify(command);
     this._log("debug", `To sidecar: ${message}`);
-    // Write the command and flush to ensure it's sent to the sidecar
     this.sidecar.stdin.write(message + "\n", (err) => {
       if (err) {
         this._log("error", `Failed to write to sidecar stdin: ${err.message}`);
@@ -451,160 +389,67 @@ class GlobalHotKeyManager {
   }
 
   /**
-   * Register a global hotkey with a callback
+   * Register a global hotkey with an optional callback
    * @param {string} hotkey - Hotkey string like "ctrl+shift+a"
-   * @param {function} [callback] - Optional callback function(id, state) for triggered events
+   * @param {function} [callback] - Optional callback function(id, state)
    * @returns {Promise<number>} Promise that resolves with the registered hotkey ID
    */
   register(hotkey, callback) {
-    if (this.destroyed) {
-      return Promise.reject(new Error("GlobalHotKeyManager has been destroyed"));
-    }
-
     const id = this._generateId();
-    this._log("debug", `Registering hotkey '${hotkey}' with id=${id}`);
+    if (callback) this.callbacks.set(id, callback);
 
-    if (callback) {
-      this.callbacks.set(id, callback);
-    }
-
-    const command = {
-      action: "register",
-      hotkey,
+    return this._sendCommand(
+      { action: "register", hotkey, id },
       id,
-    };
-
-    // Create a promise that resolves when the sidecar confirms registration
-    const promise = new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject, command });
-    });
-
-    if (this.ready) {
-      this._writeToStdin(command);
-    } else {
-      this._log("debug", `Sidecar not ready yet, queuing command`);
-      this.readyQueue.push(command);
-    }
-
-    return promise;
+      `Registering hotkey '${hotkey}' with id=${id}`,
+    );
   }
 
   /**
    * Unregister a hotkey by ID
    * @param {number} id - The hotkey ID returned from register()
-   * @returns {Promise<number>} Promise that resolves with the ID when the sidecar confirms unregistration
+   * @returns {Promise<number>} Promise that resolves with the unregistered ID
    */
   unregister(id) {
-    if (this.destroyed) {
-      return Promise.reject(new Error("GlobalHotKeyManager has been destroyed"));
-    }
-
-    this._log("debug", `Unregistering hotkey id=${id}`);
     this.callbacks.delete(id);
-
-    const command = {
-      action: "unregister",
-      id,
-    };
-
-    // Create a promise that resolves when the sidecar confirms unregistration
-    const promise = new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject, command });
-    });
-
-    if (this.ready) {
-      this._writeToStdin(command);
-    } else {
-      this._log("debug", `Sidecar not ready yet, queuing command`);
-      this.readyQueue.push(command);
-    }
-
-    return promise;
+    return this._sendCommand({ action: "unregister", id }, id, `Unregistering hotkey id=${id}`);
   }
 
   /**
    * Register multiple hotkeys at once
    * @param {Array<{hotkey: string, callback: function}>} entries - Array of {hotkey, callback}
-   * @returns {Promise<number[]>} Promise that resolves with array of all IDs if successful, or rejects with (number | Error)[] if any fail
+   * @returns {Promise<number[]>} Promise resolving with all IDs, or rejecting with (number | Error)[]
    */
   registerAll(entries) {
-    if (entries.length == 0) return Promise.resolve([]);
+    if (entries.length === 0) return Promise.resolve([]);
 
-    if (this.destroyed) {
-      return Promise.reject(new Error("GlobalHotKeyManager has been destroyed"));
-    }
-
-    const ids = [];
-    const hotkeys = [];
-
-    for (const entry of entries) {
+    const ids = entries.map((entry) => {
       const id = this._generateId();
-      ids.push(id);
-      if (entry.callback) {
-        this.callbacks.set(id, entry.callback);
-      }
-      hotkeys.push({ hotkey: entry.hotkey, id });
-    }
-
-    const command = {
-      action: "register_all",
-      hotkeys,
-    };
-
-    this._log(
-      "debug",
-      `Registering ${ids.length} hotkeys: ${hotkeys.map((h) => h.hotkey).join(", ")}`,
-    );
-
-    // Create a promise that resolves when the sidecar confirms registration
-    const promise = new Promise((resolve, reject) => {
-      this.pending.set("register_all", { resolve, reject, ids });
+      if (entry.callback) this.callbacks.set(id, entry.callback);
+      return { hotkey: entry.hotkey, id };
     });
 
-    if (this.ready) {
-      this._writeToStdin(command);
-    } else {
-      this._log("debug", `Sidecar not ready yet, queuing command`);
-      this.readyQueue.push(command);
-    }
-
-    return promise;
+    const idList = ids.map((e) => e.id);
+    return this._sendCommand(
+      { action: "register_all", hotkeys: ids },
+      "register_all",
+      `Registering ${idList.length} hotkeys: ${ids.map((h) => h.hotkey).join(", ")}`,
+    );
   }
 
   /**
    * Unregister multiple hotkeys by ID
    * @param {Array<number>} ids - Array of hotkey IDs
-   * @returns {Promise<number[]>} Promise that resolves with array of all IDs if successful, or rejects with (number | Error)[] if any fail
+   * @returns {Promise<number[]>} Promise resolving with all IDs, or rejecting with (number | Error)[]
    */
   unregisterAll(ids) {
-    if (this.destroyed) {
-      return Promise.reject(new Error("GlobalHotKeyManager has been destroyed"));
-    }
+    for (const id of ids) this.callbacks.delete(id);
 
-    this._log("debug", `Unregistering ${ids.length} hotkeys: ${ids.join(", ")}`);
-
-    for (const id of ids) {
-      this.callbacks.delete(id);
-    }
-
-    const command = {
-      action: "unregister_all",
-      ids,
-    };
-
-    // Create a promise that resolves when the sidecar confirms unregistration
-    const promise = new Promise((resolve, reject) => {
-      this.pending.set("unregister_all", { resolve, reject, ids });
-    });
-
-    if (this.ready) {
-      this._writeToStdin(command);
-    } else {
-      this._log("debug", `Sidecar not ready yet, queuing command`);
-      this.readyQueue.push(command);
-    }
-
-    return promise;
+    return this._sendCommand(
+      { action: "unregister_all", ids },
+      "unregister_all",
+      `Unregistering ${ids.length} hotkeys: ${ids.join(", ")}`,
+    );
   }
 
   /**
