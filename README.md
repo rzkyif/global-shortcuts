@@ -118,18 +118,32 @@ Creates a new manager instance and spawns the Rust sidecar process.
 
 Hotkeys are defined as strings with modifiers separated by `+`. The main key must come last. Order of modifiers does not matter.
 
+Hotkey parsing is handled by Tauri's [`global-hotkey`](https://github.com/tauri-apps/global-hotkey) crate. For a complete reference of supported keys and formats, see the [global-hotkey documentation](https://github.com/tauri-apps/global-hotkey).
+
 **Format:** `modifier1+modifier2+...+key`
 
 **Supported Modifiers:**
 
-- `ctrl`, `control`
-- `shift`
-- `alt`, `option`
-- `super`, `cmd`, `command`, `meta`, `windows`
-- `cmdorctrl` _(Dynamically maps to `cmd` on macOS and `ctrl` on Windows/Linux)_
+| Modifier       | Aliases                                                                                                              |
+| -------------- | -------------------------------------------------------------------------------------------------------------------- |
+| Control        | `ctrl`, `control`                                                                                                    |
+| Shift          | `shift`                                                                                                              |
+| Alt            | `alt`, `option`                                                                                                      |
+| Super          | `super`, `cmd`, `command`                                                                                            |
+| Cross-platform | `cmdorctrl`, `commandorctrl`, `cmdorcontrol`, `commandorcontrol` _(maps to `cmd` on macOS, `ctrl` on Windows/Linux)_ |
 
 **Supported Keys:**
-All standard letters (`a-z`), digits (`0-9`), function keys (`f1-f24`), special keys (`space`, `enter`, `tab`, `escape`), arrow keys, numpad keys, and media keys.
+
+- **Letters:** `a`-`z` (also accepts `keya`-`keyz`)
+- **Digits:** `0`-`9` (also accepts `digit0`-`digit9`)
+- **Function keys:** `f1`-`f24`
+- **Special keys:** `space`, `enter`, `tab`, `escape`/`esc`, `backspace`, `delete`/`del`
+- **Arrow keys:** `up`/`arrowup`, `down`/`arrowdown`, `left`/`arrowleft`, `right`/`arrowright`
+- **Navigation:** `home`, `end`, `pageup`, `pagedown`, `insert`
+- **Lock keys:** `capslock`, `numlock`, `scrolllock`, `printscreen`, `pause`
+- **Punctuation:** `-`/`minus`, `=`/`equal`, `[`/`bracketleft`, `]`/`bracketright`, `\`/`backslash`, `;`/`semicolon`, `'`/`quote`, `` ` ``/`backquote`, `,`/`comma`, `.`/`period`, `/`/`slash`
+- **Numpad:** `numpad0`-`numpad9`, `numpadadd`, `numpadsubtract`, `numpadmultiply`, `numpaddivide`, `numpaddecimal`, `numpadenter`, `numpadequal`
+- **Media keys:** `volumeup`/`audiovolumeup`, `volumedown`/`audiovolumedown`, `volumemute`/`audiovolumemute`, `mediaplay`, `mediapause`, `mediaplaypause`, `mediastop`, `mediatracknext`, `mediatrackprev`/`mediatrackprevious`
 
 **Examples:**
 

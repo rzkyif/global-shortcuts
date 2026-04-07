@@ -6,7 +6,7 @@
 //! On macOS and Windows, this uses Tao's event loop (required by global-hotkey).
 //! On Linux, this uses a simple polling loop without Tao.
 
-use global_hotkey::hotkey::{Code, HotKey as RustHotKey, Modifiers as RustModifiers};
+use global_hotkey::hotkey::HotKey as RustHotKey;
 use global_hotkey::{
   GlobalHotKeyEvent, GlobalHotKeyManager as RustGlobalHotKeyManager, HotKeyState,
 };
@@ -179,201 +179,6 @@ struct RegisteredHotkey {
   hotkey: RustHotKey,
 }
 
-/// Parse a hotkey string like "ctrl+shift+a" into modifiers and key code
-fn parse_hotkey(hotkey_str: &str) -> Result<(Option<RustModifiers>, Code), String> {
-  let tokens: Vec<&str> = hotkey_str.split('+').collect();
-
-  let mut modifiers = RustModifiers::empty();
-  let mut key: Option<Code> = None;
-
-  for token in tokens.iter() {
-    let t = token.trim();
-    if t.is_empty() {
-      return Err(format!("Empty token in hotkey: {}", hotkey_str));
-    }
-
-    match t.to_uppercase().as_str() {
-      "CTRL" | "CONTROL" => {
-        modifiers.insert(RustModifiers::CONTROL);
-      }
-      "SHIFT" => {
-        modifiers.insert(RustModifiers::SHIFT);
-      }
-      "ALT" | "OPTION" => {
-        modifiers.insert(RustModifiers::ALT);
-      }
-      "SUPER" | "CMD" | "COMMAND" | "META" | "WINDOWS" => {
-        modifiers.insert(RustModifiers::SUPER);
-      }
-      "COMMANDORCTRL" | "CMDORCTRL" | "CMDORCONTROL" | "COMMANDORCONTROL" => {
-        #[cfg(target_os = "macos")]
-        modifiers.insert(RustModifiers::SUPER);
-        #[cfg(not(target_os = "macos"))]
-        modifiers.insert(RustModifiers::CONTROL);
-      }
-      _ => {
-        if key.is_some() {
-          return Err(format!(
-            "Invalid hotkey format: '{}', multiple main keys found",
-            hotkey_str
-          ));
-        }
-        key = Some(parse_key(t)?);
-      }
-    }
-  }
-
-  let key = key.ok_or_else(|| format!("No main key found in hotkey: {}", hotkey_str))?;
-
-  Ok((Some(modifiers), key))
-}
-
-/// Parse a key string to Code enum
-fn parse_key(key: &str) -> Result<Code, String> {
-  use Code::*;
-
-  match key.to_uppercase().as_str() {
-    // Function keys
-    "F1" => Ok(F1),
-    "F2" => Ok(F2),
-    "F3" => Ok(F3),
-    "F4" => Ok(F4),
-    "F5" => Ok(F5),
-    "F6" => Ok(F6),
-    "F7" => Ok(F7),
-    "F8" => Ok(F8),
-    "F9" => Ok(F9),
-    "F10" => Ok(F10),
-    "F11" => Ok(F11),
-    "F12" => Ok(F12),
-    "F13" => Ok(F13),
-    "F14" => Ok(F14),
-    "F15" => Ok(F15),
-    "F16" => Ok(F16),
-    "F17" => Ok(F17),
-    "F18" => Ok(F18),
-    "F19" => Ok(F19),
-    "F20" => Ok(F20),
-    "F21" => Ok(F21),
-    "F22" => Ok(F22),
-    "F23" => Ok(F23),
-    "F24" => Ok(F24),
-
-    // Letters
-    "A" | "KEYA" => Ok(KeyA),
-    "B" | "KEYB" => Ok(KeyB),
-    "C" | "KEYC" => Ok(KeyC),
-    "D" | "KEYD" => Ok(KeyD),
-    "E" | "KEYE" => Ok(KeyE),
-    "F" | "KEYF" => Ok(KeyF),
-    "G" | "KEYG" => Ok(KeyG),
-    "H" | "KEYH" => Ok(KeyH),
-    "I" | "KEYI" => Ok(KeyI),
-    "J" | "KEYJ" => Ok(KeyJ),
-    "K" | "KEYK" => Ok(KeyK),
-    "L" | "KEYL" => Ok(KeyL),
-    "M" | "KEYM" => Ok(KeyM),
-    "N" | "KEYN" => Ok(KeyN),
-    "O" | "KEYO" => Ok(KeyO),
-    "P" | "KEYP" => Ok(KeyP),
-    "Q" | "KEYQ" => Ok(KeyQ),
-    "R" | "KEYR" => Ok(KeyR),
-    "S" | "KEYS" => Ok(KeyS),
-    "T" | "KEYT" => Ok(KeyT),
-    "U" | "KEYU" => Ok(KeyU),
-    "V" | "KEYV" => Ok(KeyV),
-    "W" | "KEYW" => Ok(KeyW),
-    "X" | "KEYX" => Ok(KeyX),
-    "Y" | "KEYY" => Ok(KeyY),
-    "Z" | "KEYZ" => Ok(KeyZ),
-
-    // Digits
-    "0" | "DIGIT0" => Ok(Digit0),
-    "1" | "DIGIT1" => Ok(Digit1),
-    "2" | "DIGIT2" => Ok(Digit2),
-    "3" | "DIGIT3" => Ok(Digit3),
-    "4" | "DIGIT4" => Ok(Digit4),
-    "5" | "DIGIT5" => Ok(Digit5),
-    "6" | "DIGIT6" => Ok(Digit6),
-    "7" | "DIGIT7" => Ok(Digit7),
-    "8" | "DIGIT8" => Ok(Digit8),
-    "9" | "DIGIT9" => Ok(Digit9),
-
-    // Special keys
-    "SPACE" => Ok(Space),
-    "ENTER" => Ok(Enter),
-    "TAB" => Ok(Tab),
-    "ESCAPE" | "ESC" => Ok(Escape),
-    "BACKSPACE" => Ok(Backspace),
-    "DELETE" | "DEL" => Ok(Delete),
-
-    // Arrow keys
-    "UP" | "ARROWUP" => Ok(ArrowUp),
-    "DOWN" | "ARROWDOWN" => Ok(ArrowDown),
-    "LEFT" | "ARROWLEFT" => Ok(ArrowLeft),
-    "RIGHT" | "ARROWRIGHT" => Ok(ArrowRight),
-
-    // Navigation keys
-    "HOME" => Ok(Home),
-    "END" => Ok(End),
-    "PAGEUP" => Ok(PageUp),
-    "PAGEDOWN" => Ok(PageDown),
-    "INSERT" => Ok(Insert),
-
-    // Lock keys
-    "CAPSLOCK" => Ok(CapsLock),
-    "NUMLOCK" => Ok(NumLock),
-    "SCROLLLOCK" => Ok(ScrollLock),
-    "PRINTSCREEN" | "PRINT" => Ok(PrintScreen),
-    "PAUSE" => Ok(Pause),
-
-    // Punctuation
-    "MINUS" | "-" => Ok(Minus),
-    "EQUAL" | "=" => Ok(Equal),
-    "BRACKETLEFT" | "[" => Ok(BracketLeft),
-    "BRACKETRIGHT" | "]" => Ok(BracketRight),
-    "BACKSLASH" | "\\" => Ok(Backslash),
-    "SEMICOLON" | ";" => Ok(Semicolon),
-    "QUOTE" | "'" => Ok(Quote),
-    "BACKQUOTE" | "`" => Ok(Backquote),
-    "COMMA" | "," => Ok(Comma),
-    "PERIOD" | "." => Ok(Period),
-    "SLASH" | "/" => Ok(Slash),
-
-    // Numpad
-    "NUMPAD0" | "NUM0" => Ok(Numpad0),
-    "NUMPAD1" | "NUM1" => Ok(Numpad1),
-    "NUMPAD2" | "NUM2" => Ok(Numpad2),
-    "NUMPAD3" | "NUM3" => Ok(Numpad3),
-    "NUMPAD4" | "NUM4" => Ok(Numpad4),
-    "NUMPAD5" | "NUM5" => Ok(Numpad5),
-    "NUMPAD6" | "NUM6" => Ok(Numpad6),
-    "NUMPAD7" | "NUM7" => Ok(Numpad7),
-    "NUMPAD8" | "NUM8" => Ok(Numpad8),
-    "NUMPAD9" | "NUM9" => Ok(Numpad9),
-    "NUMPADADD" | "NUMADD" | "NUMPADPLUS" | "NUMPLUS" => Ok(NumpadAdd),
-    "NUMPADSUBTRACT" | "NUMSUBTRACT" => Ok(NumpadSubtract),
-    "NUMPADMULTIPLY" | "NUMMULTIPLY" => Ok(NumpadMultiply),
-    "NUMPADDIVIDE" | "NUMDIVIDE" => Ok(NumpadDivide),
-    "NUMPADDECIMAL" | "NUMDECIMAL" => Ok(NumpadDecimal),
-    "NUMPADENTER" | "NUMENTER" => Ok(NumpadEnter),
-    "NUMPADEQUAL" | "NUMEQUAL" => Ok(NumpadEqual),
-
-    // Media keys
-    "VOLUMEUP" | "AUDIOVOLUMEUP" => Ok(AudioVolumeUp),
-    "VOLUMEDOWN" | "AUDIOVOLUMEDOWN" => Ok(AudioVolumeDown),
-    "VOLUMEMUTE" | "AUDIOVOLUMEMUTE" => Ok(AudioVolumeMute),
-    "MEDIAPLAY" => Ok(MediaPlay),
-    "MEDIAPAUSE" => Ok(MediaPause),
-    "MEDIAPLAYPAUSE" => Ok(MediaPlayPause),
-    "MEDIASTOP" => Ok(MediaStop),
-    "MEDIATRACKNEXT" => Ok(MediaTrackNext),
-    "MEDIATRACKPREV" | "MEDIATRACKPREVIOUS" => Ok(MediaTrackPrevious),
-
-    _ => Err(format!("Unsupported key: {}", key)),
-  }
-}
-
 /// Helper to determine if an event should be flushed immediately
 fn should_flush_immediately(event: &OutputEvent) -> bool {
   matches!(
@@ -453,9 +258,8 @@ fn process_commands(
             "debug",
             &format!("Received register: id={}, hotkey='{}'", id, hotkey),
           );
-          match parse_hotkey(&hotkey) {
-            Ok((mods, code)) => {
-              let rust_hotkey = RustHotKey::new(mods, code);
+          match hotkey.parse::<RustHotKey>() {
+            Ok(rust_hotkey) => {
               let rust_id = rust_hotkey.id();
               debug_log("debug", &format!("Parsed hotkey, rust_id={}", rust_id));
               match manager.register(rust_hotkey) {
@@ -549,9 +353,8 @@ fn process_commands(
             std::collections::HashMap::new();
 
           for entry in &hotkeys {
-            match parse_hotkey(&entry.hotkey) {
-              Ok((mods, code)) => {
-                let rust_hotkey = RustHotKey::new(mods, code);
+            match entry.hotkey.parse::<RustHotKey>() {
+              Ok(rust_hotkey) => {
                 parsed_hotkeys.push((entry.id, rust_hotkey));
               }
               Err(e) => {
