@@ -16,38 +16,36 @@ Under the hood, `global-shortcuts` bypasses the threading limitations and event-
 npm install global-shortcuts
 ```
 
-_Note: Pre-compiled, highly optimized Rust binaries for your specific operating system and architecture are automatically resolved during installation._
+> Pre-compiled Rust binaries for your specific operating system and architecture are automatically resolved during installation.
 
 ## Quick Start
 
 ```typescript
 import { GlobalHotKeyManager } from "global-shortcuts";
 
-async function main() {
-  // 1. Initialize the manager (spawns the Rust sidecar process)
-  const manager = new GlobalHotKeyManager();
+// 1. Initialize the manager (spawns the Rust sidecar process)
+const manager = new GlobalHotKeyManager();
 
-  // 2. Register a single hotkey
-  const id = await manager.register("ctrl+shift+a", (id, state) => {
-    console.log(`Hotkey pressed! State: ${state}`);
-  });
+// 2. Register a single hotkey
+const id = await manager.register("ctrl+shift+a", (id, state) => {
+  console.log(`Hotkey pressed! State: ${state}`);
+});
 
-  // 3. Register multiple hotkeys simultaneously
-  const ids = await manager.registerAll([
-    { hotkey: "cmdorctrl+b", callback: () => console.log("Action B triggered") },
-    { hotkey: "alt+f1", callback: () => console.log("Action C triggered") },
-  ]);
+// 3. Register multiple hotkeys simultaneously
+const ids = await manager.registerAll([
+  { hotkey: "cmdorctrl+b", callback: () => console.log("Action B triggered") },
+  { hotkey: "alt+f1", callback: () => console.log("Action C triggered") },
+]);
 
-  // 4. Clean up specific hotkeys or multiple hotkeys
-  await manager.unregister(id);
-  await manager.unregisterAll(ids);
+// 4. Clean up specific hotkeys or multiple hotkeys
+await manager.unregister(id);
+await manager.unregisterAll(ids);
 
-  // Note: The manager automatically cleans up all hotkeys and kills the
-  // sidecar process when the Node.js process exits.
-}
-
-main();
+// Note: The manager automatically cleans up all hotkeys and kills the
+// sidecar process when the Node.js process exits.
 ```
+
+> The example code above works, but will exit immediately after registering the hotkeys. To keep the application from closing, you will need either an infinite loop or a synchronously blocking input call.
 
 ## API Reference
 
